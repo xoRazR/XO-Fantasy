@@ -1,22 +1,21 @@
 
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { FormEvent } from "react";
-import { createClient } from "@supabase/supabase-js";
+import { useCallback, useEffect, useState } from "react";
+import { createClient, type Session } from "@supabase/supabase-js";
 
 type Player = {
-  id?: string;
+  id: string;
   name: string;
-  position?: string;
-  team?: string;
-  imageUrl?: string;
+  position: string;
+  team: string;
+  imageUrl: string;
 };
 
 type Submission = {
   id: string;
-  submission_number: number;
   created_at: string;
+  submission_number?: number;
   tiktok_username: string;
   submission_type: "trade" | "start_sit";
   give_players: Player[];
@@ -26,109 +25,138 @@ type Submission = {
   processed_at: string | null;
 };
 
-type SoundType = "incoming" | "swipe" | "accepted" | "declined";
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabase =
+  supabaseUrl && supabaseKey
+    ? createClient(supabaseUrl, supabaseKey)
+    : null;
 
-const supabase = createClient(supabaseUrl, supabaseKey);
+const gold = "#e8c77d";
+
+function queueName(username: string) {
+  return username.length > 8
+    ? `${username.slice(0, 8)}...`
+    : username;
+}
+
+function PlayerBar({ player }: { player: Player }) {
+  return (
+    <div className="player-bar">
+      {player.imageUrl ? (
+        <img
+          src={player.imageUrl}
+          alt=""
+          onError={(e) => {
+            e.currentTarget.style.display = "none";
+          }}
+        />
+      ) : (
+        <div className="player-placeholder">?</div>
+      )}
+      <div className="player-info">
+        <strong>{player.name}</strong>
+        <span>{player.position} · {player.team}</span>
+      </div>
+    </div>
+  );
+}
+
+function SubmissionChip({ number }: { number?: number }) {
+  return (
+    <div className="chip-wrap">
+      <div className="chip">
+        <div className="chip-inner">
+          <div className="chip-label">SUBMISSION</div>
+          <div className="chip-number">#{number ?? "—"}</div>
+          <div className="chip-bottom">ASK XO</div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function AdminPage() {
-  const [session, setSession] = useState<any>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [checkingLogin, setCheckingLogin] = useState(true);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
-  const [loading, setLoading] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
 
   const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [activeTab, setActiveTab] = useState<"pending" | "history">("pending");
-  const [processingId, setProcessingId] = useState<string | null>(null);
-  const [exitingId, setExitingId] = useState<string | null>(null);
-  const [incomingId, setIncomingId] = useState<string | null>(null);
-  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [processingId, setProcessingId] = useState("");
+  const [resetting, setResetting] = useState(false);
+  const [view, setView] = useState<"pending" | "history">("pending");
 
   const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(45);
+  const [volume, setVolume] = useState(80);
 
-  const audioRef = useRef<AudioContext | null>(null);
-  const knownIdsRef = useRef<Set<string>>(new Set());
-  const firstLoadRef = useRef(true);
+  function playCashSound() {
+    if (muted || volume === 0) return;
 
-  // Check whether the admin is logged in.
-  useEffect(() => {
-    let mounted = true;
+    const sound = new Audio("/sounds/cash-register.mp3");
+    sound.volume = volume / 100;
 
-    supabase.auth.getSession().then(({ data }) => {
-      if (mounted) {
-        setSession(data.session);
-        setLoading(false);
-      }
+    void sound.play().catch((error) => {
+      console.warn("Could not play cash-register sound:", error);
     });
+  }
 
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-    });
-
-    return () => {
-      mounted = false;
-      subscription.unsubscribe();
-    };
-  }, []);
-
-  // Load submissions from Supabase.
   const loadSubmissions = useCallback(async () => {
-    if (!session) return;
+    if (!supabase) return;
 
-    const { data, error: fetchError } = await supabase
+    setLoading(true);
+    setLoadError("");
+
+    const { data, error } = await supabase
       .from("submissions")
       .select("*")
       .order("created_at", { ascending: true });
 
-    if (fetchError) {
-      setError(fetchError.message);
+    if (error) {
+      console.error(error);
+      setLoadError(
+        "Couldn't load submissions. Check your Supabase access policies."
+      );
+    } else {
+      setSubmissions((data || []) as Submission[]);
+    }
+
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) {
+      setCheckingLogin(false);
       return;
     }
 
-    const rows = (data || []) as Submission[];
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setCheckingLogin(false);
+    });
 
-    if (firstLoadRef.current) {
-      knownIdsRef.current = new Set(rows.map((item) => item.id));
-      firstLoadRef.current = false;
-    } else {
-      const newItems = rows.filter(
-        (item) =>
-          !knownIdsRef.current.has(item.id) &&
-          item.status === "pending"
-      );
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
 
-      if (newItems.length > 0) {
-        const newest = newItems[newItems.length - 1];
-        setIncomingId(newest.id);
-        void playSound("incoming");
+    return () => subscription.unsubscribe();
+  }, []);
 
-        window.setTimeout(() => {
-          setIncomingId(null);
-        }, 1800);
-      }
-
-      rows.forEach((item) => knownIdsRef.current.add(item.id));
-    }
-
-    setSubmissions(rows);
-    setError("");
-  }, [session]);
-
-  // Refresh when logged in and listen for new submissions.
   useEffect(() => {
-    if (!session) {
+    if (!session || !supabase) {
       setSubmissions([]);
       return;
     }
 
-    void loadSubmissions();
+    loadSubmissions();
 
     const channel = supabase
       .channel("askxo-submissions")
@@ -137,170 +165,118 @@ export default function AdminPage() {
         {
           event: "*",
           schema: "public",
-          table: "submissions",
+          table: "submissions"
         },
         () => {
-          void loadSubmissions();
+          loadSubmissions();
         }
       )
       .subscribe();
 
     return () => {
-      void supabase.removeChannel(channel);
+      supabase.removeChannel(channel);
     };
   }, [session, loadSubmissions]);
 
-  // Browser-generated sound effects.
-  async function playSound(type: SoundType) {
-    if (muted || volume === 0 || typeof window === "undefined") return;
+  async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!supabase) return;
 
-    try {
-      if (!audioRef.current) {
-        audioRef.current = new window.AudioContext();
-      }
-
-      const ctx = audioRef.current;
-
-      if (ctx.state !== "running") {
-        await ctx.resume();
-      }
-
-      if (ctx.state !== "running") return;
-
-      const master = ctx.createGain();
-      master.gain.value = (volume / 100) * 0.65;
-      master.connect(ctx.destination);
-
-      function tone(
-        frequency: number,
-        delay: number,
-        duration: number,
-        wave: OscillatorType = "sine",
-        endFrequency?: number
-      ) {
-        const start = ctx.currentTime + delay;
-        const oscillator = ctx.createOscillator();
-        const gain = ctx.createGain();
-
-        oscillator.type = wave;
-        oscillator.frequency.setValueAtTime(frequency, start);
-
-        if (endFrequency) {
-          oscillator.frequency.exponentialRampToValueAtTime(
-            endFrequency,
-            start + duration
-          );
-        }
-
-        gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.linearRampToValueAtTime(0.18, start + 0.025);
-        gain.gain.exponentialRampToValueAtTime(
-          0.0001,
-          start + duration
-        );
-
-        oscillator.connect(gain);
-        gain.connect(master);
-        oscillator.start(start);
-        oscillator.stop(start + duration + 0.03);
-      }
-
-      if (type === "incoming") {
-        tone(660, 0, 0.25);
-        tone(880, 0.13, 0.35);
-        tone(1100, 0.26, 0.4);
-      }
-
-      if (type === "swipe") {
-        tone(500, 0, 0.3, "sawtooth", 100);
-      }
-
-      if (type === "accepted") {
-  // Cash-register CHA-CHING!
-  tone(1318, 0, 0.38, "sine", 1760);
-  tone(1976, 0.09, 0.48, "triangle", 2637);
-  tone(988, 0.20, 0.38, "sine", 1318);
-  tone(1568, 0.34, 0.55, "sine", 2093);
-  tone(392, 0.05, 0.16, "triangle");
-}
-
-      if (type === "declined") {
-        tone(440, 0, 0.25, "triangle");
-        tone(330, 0.16, 0.3, "triangle");
-        tone(220, 0.32, 0.4, "triangle");
-      }
-
-      window.setTimeout(() => master.disconnect(), 1600);
-    } catch (soundError) {
-      console.warn("Sound could not play:", soundError);
-    }
-  }
-
-  async function playActionSounds(status: "accepted" | "declined") {
-    await playSound("swipe");
-    await new Promise((resolve) => window.setTimeout(resolve, 110));
-    await playSound(status);
-  }
-
-  // Admin login.
-  async function handleLogin(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
     setLoggingIn(true);
     setLoginError("");
 
-    const { error: authError } = await supabase.auth.signInWithPassword({
+    const { error } = await supabase.auth.signInWithPassword({
       email,
-      password,
+      password
     });
 
-    if (authError) {
-      setLoginError(authError.message);
+    if (error) {
+      setLoginError("Login failed. Check your email and password.");
     }
 
     setLoggingIn(false);
   }
 
   async function handleLogout() {
+    if (!supabase) return;
+
     await supabase.auth.signOut();
     setSubmissions([]);
+    setPassword("");
   }
 
-  // Accept or decline a submission.
+  async function endStream() {
+    if (!supabase || resetting || processingId) return;
+
+    const confirmed = window.confirm(
+      "END STREAM?\n\nThis permanently deletes every submission in Pending and History and restarts numbering at #1.\n\nThis cannot be undone."
+    );
+
+    if (!confirmed) return;
+
+    setResetting(true);
+    setLoadError("");
+
+    const { error } = await supabase.rpc("reset_askxo_submissions");
+
+    if (error) {
+      console.error("Stream reset failed:", error);
+      setLoadError(
+        "End Stream failed. Check that the Supabase reset function has been created."
+      );
+      alert("End Stream failed. Your submissions have not been cleared.");
+      setResetting(false);
+      return;
+    }
+
+    setSubmissions([]);
+    setView("pending");
+    setResetting(false);
+
+    alert(
+      "STREAM ENDED!\n\nPending and History are empty. Your next submission will be #1."
+    );
+
+    await loadSubmissions();
+  }
+
   async function processSubmission(
     item: Submission,
     status: "accepted" | "declined"
   ) {
-    if (processingId) return;
+    if (!supabase) return;
 
     setProcessingId(item.id);
-    setExitingId(item.id);
-    void playActionSounds(status);
 
-    await new Promise((resolve) => window.setTimeout(resolve, 350));
-
-    const { error: updateError } = await supabase
+    const { error } = await supabase
       .from("submissions")
       .update({
         status,
-        processed_at: new Date().toISOString(),
+        processed_at: new Date().toISOString()
       })
       .eq("id", item.id);
 
-    if (updateError) {
-      setError(updateError.message);
-      setExitingId(null);
-      setProcessingId(null);
-      return;
+    if (error) {
+      console.error(error);
+      alert("Couldn't update this submission. Please try again.");
+    } else {
+      if (status === "accepted") {
+        playCashSound();
+      }
+
+      await loadSubmissions();
     }
 
-    setExitingId(null);
-    setProcessingId(null);
-    await loadSubmissions();
+    setProcessingId("");
   }
 
-  const pending = submissions.filter(
-    (item) => item.status === "pending"
-  );
+  const pending = submissions
+    .filter((item) => item.status === "pending")
+    .sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() -
+        new Date(b.created_at).getTime()
+    );
 
   const history = submissions
     .filter((item) => item.status !== "pending")
@@ -310,1007 +286,1155 @@ export default function AdminPage() {
         new Date(a.processed_at || a.created_at).getTime()
     );
 
-  const displayedSubmissions =
-    activeTab === "pending" ? pending : history;
+  const currentSubmission = pending[0] ?? null;
+  const nextUp = pending.slice(1, 5);
 
-  function formatDate(date: string) {
-    return new Date(date).toLocaleString([], {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  }
+  const pageStyle: React.CSSProperties = {
+    minHeight: "100vh",
+    padding: 16,
+    color: "#fff",
+    fontFamily: "Arial, sans-serif",
+    background:
+      "radial-gradient(ellipse at center, #173c2c 0%, #0c241b 70%, #080e0b 100%)"
+  };
 
-  if (loading) {
+  if (!supabase) {
     return (
-      <main className="login-screen">
-        <div className="login-box">LOADING ASKXO...</div>
-        <style>{styles}</style>
+      <main style={pageStyle}>
+        <h1>ASK <span style={{ color: gold }}>XO</span></h1>
+        <p>Supabase environment variables are missing. Check Vercel settings.</p>
       </main>
     );
   }
 
-  // Login screen.
+  if (checkingLogin) {
+    return (
+      <main style={pageStyle}>
+        <h1>ASK <span style={{ color: gold }}>XO</span></h1>
+        <p>Checking secure login...</p>
+      </main>
+    );
+  }
+
   if (!session) {
     return (
-      <main className="login-screen">
-        <style>{styles}</style>
+      <main className="login-page" style={pageStyle}>
+        <section className="login-panel">
+          <h1 className="brand">
+            ASK <span>XO</span>
+          </h1>
+          <p className="eyebrow">PRIVATE STREAMER DASHBOARD</p>
+          <h2>Streamer Login</h2>
 
-        <form className="login-box" onSubmit={handleLogin}>
-          <div className="login-logo">ASK<span>XO</span></div>
-          <p className="login-subtitle">PRIVATE ADMIN ACCESS</p>
+          <form onSubmit={handleLogin}>
+            <label>EMAIL</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Your Supabase login email"
+              required
+            />
 
-          <label>Email</label>
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="Admin email"
-            required
-          />
+            <label>PASSWORD</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Your password"
+              required
+            />
 
-          <label>Password</label>
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder="Password"
-            required
-          />
+            {loginError && <p className="error">{loginError}</p>}
 
-          {loginError && (
-            <p className="error-message">{loginError}</p>
-          )}
-
-          <button
-            className="login-button"
-            type="submit"
-            disabled={loggingIn}
-          >
-            {loggingIn ? "SIGNING IN..." : "ENTER DASHBOARD"}
-          </button>
-        </form>
+            <button
+              type="submit"
+              disabled={loggingIn}
+              className="gold-button login-button"
+            >
+              {loggingIn ? "SIGNING IN..." : "ENTER DASHBOARD"}
+            </button>
+          </form>
+        </section>
+        <style jsx>{styles}</style>
       </main>
     );
   }
 
   return (
-    <main className="admin-page">
-      <style>{styles}</style>
+    <main style={pageStyle}>
+      <div className="casino-table">
+        <header className="top-bar">
+          <div>
+            <h1 className="brand">
+              ASK <span>XO</span>
+            </h1>
+            <p className="eyebrow">THE WEEKEND XO TABLE</p>
+          </div>
 
-      <header className="dashboard-header">
-        <div>
-          <div className="brand">ASK<span>XO</span></div>
-          <div className="header-subtitle">WEEKEND XO ADMIN</div>
-        </div>
+          <div className="top-controls">
+            <div className="sound-control">
+              <button
+                className="small-control"
+                onClick={() => setMuted(!muted)}
+                title={muted ? "Unmute sound" : "Mute sound"}
+              >
+                {muted ? "🔇 MUTED" : "🔊 SOUND"}
+              </button>
 
-        <div className="header-controls">
-          <div className="sound-controls">
+              <input
+                aria-label="Sound volume"
+                type="range"
+                min="0"
+                max="100"
+                value={volume}
+                onChange={(e) => setVolume(Number(e.target.value))}
+              />
+
+              <span className="volume-number">{volume}%</span>
+            </div>
+
+            {/* END STREAM BUTTON */}
             <button
-              className="sound-toggle"
-              onClick={() => setMuted(!muted)}
-              title={muted ? "Unmute sounds" : "Mute sounds"}
+              type="button"
+              className="end-stream-button"
+              onClick={endStream}
+              disabled={resetting || loading || !!processingId}
             >
-              {muted ? "🔇" : "🔊"}
+              {resetting ? "ENDING..." : "END STREAM"}
             </button>
 
-            <input
-              aria-label="Sound volume"
-              type="range"
-              min="0"
-              max="100"
-              value={volume}
-              onChange={(event) =>
-                setVolume(Number(event.target.value))
-              }
-            />
-
-            <span className="volume-number">{volume}%</span>
+            {/* LOG OUT BUTTON */}
+            <button
+              type="button"
+              className="small-control"
+              onClick={handleLogout}
+            >
+              LOG OUT
+            </button>
           </div>
+        </header>
 
-          <button className="logout-button" onClick={handleLogout}>
-            LOG OUT
+        <div className="table-status">
+          <span className="status-dot" />
+          STREAM CONTROL CENTER
+          <span className="status-divider">|</span>
+          {pending.length} WAITING
+          <span className="status-divider">|</span>
+          {history.length} COMPLETED
+        </div>
+
+        <nav className="view-tabs">
+          <button
+            className={view === "pending" ? "tab active-tab" : "tab"}
+            onClick={() => setView("pending")}
+          >
+            LIVE TABLE ({pending.length})
           </button>
-        </div>
-      </header>
 
-      <section className="dashboard-heading">
-        <div>
-          <p className="eyebrow">THE CONTROL ROOM</p>
-          <h1>Submission <span>Desk</span></h1>
-          <p className="heading-description">
-            Review trades and lineup questions from the XO community.
-          </p>
-        </div>
+          <button
+            className={view === "history" ? "tab active-tab" : "tab"}
+            onClick={() => setView("history")}
+          >
+            HISTORY ({history.length})
+          </button>
 
-        <button
-          className="refresh-button"
-          onClick={() => void loadSubmissions()}
-        >
-          ↻ REFRESH
-        </button>
-      </section>
+          <button
+            className="tab refresh-tab"
+            onClick={loadSubmissions}
+            disabled={loading || resetting}
+          >
+            {loading ? "LOADING..." : "↻ REFRESH"}
+          </button>
+        </nav>
 
-      {error && <div className="error-banner">{error}</div>}
+        {loadError && <div className="error-banner">{loadError}</div>}
 
-      <nav className="tabs">
-        <button
-          className={activeTab === "pending" ? "tab active" : "tab"}
-          onClick={() => setActiveTab("pending")}
-        >
-          PENDING
-        </button>
-
-        <button
-          className={activeTab === "history" ? "tab active" : "tab"}
-          onClick={() => setActiveTab("history")}
-        >
-          HISTORY
-        </button>
-      </nav>
-
-      <section className="poker-table">
-        {displayedSubmissions.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-xo">XO</div>
-            <h2>
-              {activeTab === "pending"
-                ? "No pending submissions"
-                : "No completed submissions yet"}
-            </h2>
-            <p>
-              {activeTab === "pending"
-                ? "New questions will appear here when viewers submit them."
-                : "Accepted and declined submissions will be saved here."}
-            </p>
-          </div>
-        ) : (
-          <div className="submission-list">
-            {displayedSubmissions.map((item) => (
-              <article
-                key={item.id}
-                className={[
-                  "submission-card",
-                  exitingId === item.id ? "card-exiting" : "",
-                  incomingId === item.id ? "card-incoming" : "",
-                ].join(" ")}
-              >
-                <div className="playing-card-corner corner-top">
-                  <strong>{item.submission_number ?? "—"}</strong>
-                  <span>♠</span>
-                </div>
-
-                <div className="playing-card-corner corner-bottom">
-                  <strong>{item.submission_number ?? "—"}</strong>
-                  <span>♠</span>
-                </div>
-
-                <div className="submission-top">
-                  <div className="viewer-info">
-                    <span className="viewer-label">SUBMITTED BY</span>
-                    <h2 className="username">
-                      @{item.tiktok_username}
-                    </h2>
-                    <span className="submission-date">
-                      {formatDate(item.created_at)}
-                    </span>
+        {view === "pending" ? (
+          <>
+            <section className="main-table-area">
+              {loading && !currentSubmission ? (
+                <div className="empty-table">Loading submissions...</div>
+              ) : currentSubmission ? (
+                <>
+                  <div className="current-heading">
+                    <span className="gold-line" />
+                    CURRENT SUBMISSION
+                    <span className="gold-line" />
                   </div>
 
-                  <span className={`status-badge status-${item.status}`}>
-                    {item.status.toUpperCase()}
-                  </span>
-                </div>
+                  <div className="current-submission">
+                    <div className="submission-content">
+                      <div className="submission-topline">
+                        <div>
+                          <div className="username">
+                            {currentSubmission.tiktok_username}
+                          </div>
+                          <div className="submission-time">
+                            {new Date(
+                              currentSubmission.created_at
+                            ).toLocaleString()}
+                          </div>
+                        </div>
+                        <span className="pending-badge">PENDING</span>
+                      </div>
 
-                <div className="card-brand-line">
-                  <span>ASKXO</span>
-                  <span>SUBMISSION #{item.submission_number ?? "—"}</span>
-                </div>
+                      <h2 className="question-title">
+                        {currentSubmission.submission_type === "trade"
+                          ? "TRADE QUESTION"
+                          : "START / SIT QUESTION"}
+                      </h2>
 
-                <div className="card-divider" />
+                      {currentSubmission.submission_type === "trade" ? (
+                        <div className="trade-grid">
+                          <div className="trade-side give-side">
+                            <h3>THEY GIVE</h3>
+                            {currentSubmission.give_players?.length ? (
+                              currentSubmission.give_players.map(
+                                (player, index) => (
+                                  <PlayerBar
+                                    key={player.id || index}
+                                    player={player}
+                                  />
+                                )
+                              )
+                            ) : (
+                              <p className="no-players">No players listed</p>
+                            )}
+                          </div>
 
-                {item.submission_type === "trade" ? (
-                  <>
-                    <div className="question-title">
-                      <span className="question-type">TRADE QUESTION</span>
-                      <h3>Should this trade happen?</h3>
+                          <div className="trade-side get-side">
+                            <h3>THEY GET</h3>
+                            {currentSubmission.get_players?.length ? (
+                              currentSubmission.get_players.map(
+                                (player, index) => (
+                                  <PlayerBar
+                                    key={player.id || index}
+                                    player={player}
+                                  />
+                                )
+                              )
+                            ) : (
+                              <p className="no-players">No players listed</p>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="start-sit-area">
+                          <h3>PLAYERS TO COMPARE</h3>
+                          {currentSubmission.players?.map(
+                            (player, index) => (
+                              <PlayerBar
+                                key={player.id || index}
+                                player={player}
+                              />
+                            )
+                          )}
+                        </div>
+                      )}
+
+                      <div className="decision-buttons">
+                        <button
+                          disabled={!!processingId || resetting}
+                          onClick={() =>
+                            processSubmission(currentSubmission, "accepted")
+                          }
+                          className="accept-button"
+                        >
+                          {processingId === currentSubmission.id
+                            ? "PROCESSING..."
+                            : "✓ ACCEPT"}
+                        </button>
+
+                        <button
+                          disabled={!!processingId || resetting}
+                          onClick={() =>
+                            processSubmission(currentSubmission, "declined")
+                          }
+                          className="decline-button"
+                        >
+                          {processingId === currentSubmission.id
+                            ? "PROCESSING..."
+                            : "✕ DECLINE"}
+                        </button>
+                      </div>
                     </div>
 
+                    <SubmissionChip
+                      number={currentSubmission.submission_number}
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="empty-table">
+                  <div className="empty-chip">XO</div>
+                  <h2>THE TABLE IS WAITING</h2>
+                  <p>No pending submissions right now.</p>
+                  <span>New questions will appear here automatically.</span>
+                </div>
+              )}
+            </section>
+
+            <section className="queue-section">
+              <div className="queue-label">NEXT UP</div>
+
+              {Array.from({ length: 4 }).map((_, index) => {
+                const item = nextUp[index];
+
+                return (
+                  <div
+                    className={item ? "queue-name" : "queue-name queue-empty"}
+                    key={item?.id || `empty-${index}`}
+                    title={item?.tiktok_username || "Waiting for submission"}
+                  >
+                    {item
+                      ? queueName(item.tiktok_username)
+                      : "WAITING..."}
+                  </div>
+                );
+              })}
+            </section>
+
+            <p className="queue-note">
+              NEXT FOUR SUBMISSIONS · FIRST IN, FIRST UP
+            </p>
+          </>
+        ) : (
+          <section className="history-area">
+            <div className="current-heading">
+              <span className="gold-line" />
+              COMPLETED SUBMISSIONS
+              <span className="gold-line" />
+            </div>
+
+            {history.length === 0 ? (
+              <div className="empty-table">
+                <h2>NO HISTORY YET</h2>
+                <p>Accepted and declined submissions will appear here.</p>
+              </div>
+            ) : (
+              history.map((item) => (
+                <article className="history-item" key={item.id}>
+                  <div className="history-top">
+                    <div>
+                      <strong className="username">
+                        {item.tiktok_username}
+                      </strong>
+                      <p className="submission-time">
+                        {new Date(item.created_at).toLocaleString()}
+                      </p>
+                    </div>
+
+                    <div className="history-right">
+                      <span className="history-number">
+                        #{item.submission_number ?? "—"}
+                      </span>
+                      <span
+                        className={
+                          item.status === "accepted"
+                            ? "accepted-badge"
+                            : "declined-badge"
+                        }
+                      >
+                        {item.status.toUpperCase()}
+                      </span>
+                    </div>
+                  </div>
+
+                  <h3 className="history-type">
+                    {item.submission_type === "trade"
+                      ? "TRADE QUESTION"
+                      : "START / SIT QUESTION"}
+                  </h3>
+
+                  {item.submission_type === "trade" ? (
                     <div className="trade-grid">
-                      <div className="trade-side">
-                        <h4 className="side-heading">THEY GIVE</h4>
-
-                        {item.give_players?.length ? (
-                          item.give_players.map((player, index) => (
-                            <PlayerBar
-                              key={`${player.id || player.name}-${index}`}
-                              player={player}
-                            />
-                          ))
-                        ) : (
-                          <p className="no-players">No players listed</p>
-                        )}
-                      </div>
-
-                      <div className="trade-middle">⇄</div>
-
-                      <div className="trade-side">
-                        <h4 className="side-heading">THEY GET</h4>
-
-                        {item.get_players?.length ? (
-                          item.get_players.map((player, index) => (
-                            <PlayerBar
-                              key={`${player.id || player.name}-${index}`}
-                              player={player}
-                            />
-                          ))
-                        ) : (
-                          <p className="no-players">No players listed</p>
-                        )}
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="question-title">
-                      <span className="question-type">START / SIT QUESTION</span>
-                      <h3>Who should they start?</h3>
-                    </div>
-
-                    <div className="start-sit-panel">
-                      {item.players?.length ? (
-                        item.players.map((player, index) => (
+                      <div className="trade-side give-side">
+                        <h3>THEY GIVE</h3>
+                        {item.give_players?.map((player, index) => (
                           <PlayerBar
-                            key={`${player.id || player.name}-${index}`}
+                            key={player.id || index}
                             player={player}
                           />
-                        ))
-                      ) : (
-                        <p className="no-players">
-                          No players listed
-                        </p>
-                      )}
+                        ))}
+                      </div>
+
+                      <div className="trade-side get-side">
+                        <h3>THEY GET</h3>
+                        {item.get_players?.map((player, index) => (
+                          <PlayerBar
+                            key={player.id || index}
+                            player={player}
+                          />
+                        ))}
+                      </div>
                     </div>
-                  </>
-                )}
-
-                {item.status === "pending" ? (
-                  <div className="action-buttons">
-                    <button
-                      className="decline-button"
-                      disabled={processingId !== null}
-                      onClick={() =>
-                        void processSubmission(item, "declined")
-                      }
-                    >
-                      DECLINE
-                    </button>
-
-                    <button
-                      className="accept-button"
-                      disabled={processingId !== null}
-                      onClick={() =>
-                        void processSubmission(item, "accepted")
-                      }
-                    >
-                      ACCEPT
-                    </button>
-                  </div>
-                ) : (
-                  <div className="completed-label">
-                    {item.status === "accepted"
-                      ? "✓ ACCEPTED"
-                      : "✕ DECLINED"}
-                    {item.processed_at &&
-                      ` · ${formatDate(item.processed_at)}`}
-                  </div>
-                )}
-              </article>
-            ))}
-          </div>
+                  ) : (
+                    <div className="start-sit-area">
+                      {item.players?.map((player, index) => (
+                        <PlayerBar
+                          key={player.id || index}
+                          player={player}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </article>
+              ))
+            )}
+          </section>
         )}
-      </section>
 
-      <footer className="dashboard-footer">
-        WEEKEND XO <span>·</span> ASKXO ADMIN
-      </footer>
+        <footer className="table-footer">
+          ASK XO <span>·</span> PRIVATE STREAMER CONTROL
+        </footer>
+      </div>
+
+      <style jsx>{styles}</style>
     </main>
   );
 }
 
-function PlayerBar({ player }: { player: Player }) {
-  return (
-    <div className="player-bar">
-      {player.imageUrl ? (
-        <img
-          className="player-image"
-          src={player.imageUrl}
-          alt={player.name}
-        />
-      ) : (
-        <div className="player-placeholder">XO</div>
-      )}
-
-      <div className="player-details">
-        <strong>{player.name}</strong>
-        <span>
-          {[player.position, player.team].filter(Boolean).join(" · ") ||
-            "PLAYER"}
-        </span>
-      </div>
-    </div>
-  );
-}
-
 const styles = `
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  background: #080a09;
-  color: #f5f1e8;
-  font-family: Arial, Helvetica, sans-serif;
-}
-
-button, input {
-  font: inherit;
-}
-
-button {
-  cursor: pointer;
-}
-
-.login-screen {
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background:
-    radial-gradient(ellipse at center, #18241d 0%, #080a09 70%);
-}
-
-.login-box {
-  width: 100%;
-  max-width: 410px;
-  padding: 42px 34px;
-  border: 1px solid #b99b65;
-  border-radius: 18px;
-  background: linear-gradient(145deg, #191b19, #0d0f0e);
-  box-shadow: 0 20px 70px rgba(0,0,0,.5);
-}
-
-.login-logo, .brand {
-  font-family: Georgia, serif;
-  font-size: 38px;
-  font-weight: 900;
-  letter-spacing: 5px;
-  color: #f5f1e8;
-}
-
-.login-logo span, .brand span {
-  color: #c9ad78;
-}
-
-.login-subtitle {
-  margin: 8px 0 32px;
-  color: #c9ad78;
-  font-size: 10px;
-  letter-spacing: 3px;
-}
-
-.login-box label {
-  display: block;
-  margin: 18px 0 8px;
-  color: #d3c4a6;
-  font-size: 11px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-}
-
-.login-box input {
-  width: 100%;
-  padding: 14px;
-  border: 1px solid #514632;
-  border-radius: 8px;
-  outline: none;
-  background: #090b0a;
-  color: white;
-}
-
-.login-box input:focus {
-  border-color: #c9ad78;
-}
-
-.login-button {
-  width: 100%;
-  margin-top: 25px;
-  padding: 15px;
-  border: 1px solid #e0c894;
-  border-radius: 8px;
-  background: linear-gradient(135deg, #e0c894, #a98a53);
-  color: #15140f;
-  font-weight: 900;
-  letter-spacing: 1.5px;
-}
-
-.login-button:disabled {
-  opacity: .6;
-}
-
-.error-message {
-  color: #ff9999;
-  font-size: 13px;
-}
-
-.admin-page {
-  min-height: 100vh;
-  padding: 30px 5%;
-  background:
-    radial-gradient(ellipse at 50% 0%, #1c241f 0%, #0b0e0c 48%, #080a09 100%);
-}
-
-.dashboard-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding-bottom: 24px;
-  border-bottom: 1px solid rgba(201,173,120,.28);
-}
-
-.brand {
-  font-size: 31px;
-}
-
-.header-subtitle {
-  margin-top: 5px;
-  color: #b99b65;
-  font-size: 9px;
-  letter-spacing: 3px;
-}
-
-.header-controls {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-}
-
-.sound-controls {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 12px;
-  border: 1px solid #4b4639;
-  border-radius: 30px;
-  background: #141714;
-}
-
-.sound-toggle {
-  border: 0;
-  background: transparent;
-  color: white;
-  font-size: 18px;
-}
-
-.sound-controls input {
-  width: 90px;
-  accent-color: #c9ad78;
-}
-
-.volume-number {
-  min-width: 34px;
-  color: #d9c9a8;
-  font-size: 10px;
-}
-
-.logout-button, .refresh-button {
-  padding: 10px 15px;
-  border: 1px solid #9c8050;
-  border-radius: 7px;
-  background: transparent;
-  color: #d9c9a8;
-  font-size: 10px;
-  font-weight: 800;
-  letter-spacing: 1px;
-}
-
-.dashboard-heading {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 42px 0 30px;
-}
-
-.eyebrow {
-  margin: 0 0 9px;
-  color: #c9ad78;
-  font-size: 10px;
-  letter-spacing: 3px;
-}
-
-.dashboard-heading h1 {
-  margin: 0;
-  font-family: Georgia, serif;
-  font-size: clamp(32px, 5vw, 48px);
-  font-weight: 500;
-}
-
-.dashboard-heading h1 span {
-  color: #c9ad78;
-}
-
-.heading-description {
-  color: #a7a79f;
-  font-size: 13px;
-}
-
-.tabs {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 20px;
-}
-
-.tab {
-  padding: 12px 25px;
-  border: 1px solid #62543b;
-  border-radius: 7px;
-  background: #141714;
-  color: #c5b99f;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 1.5px;
-}
-
-.tab.active {
-  border-color: #d0b47b;
-  background: linear-gradient(135deg, #d8c18f, #a78a53);
-  color: #17150f;
-}
-
-.poker-table {
-  min-height: 260px;
-  padding: clamp(14px, 3vw, 34px);
-  border: 5px double #b99b65;
-  border-radius: 22px;
-  background:
-    repeating-linear-gradient(
-      45deg,
-      rgba(255,255,255,.018) 0px,
-      rgba(255,255,255,.018) 2px,
-      transparent 2px,
-      transparent 5px
-    ),
-    radial-gradient(ellipse at center, #18543b, #0b3425 78%);
-  box-shadow:
-    inset 0 0 0 4px rgba(201,173,120,.12),
-    inset 0 0 65px rgba(0,0,0,.45),
-    0 15px 45px rgba(0,0,0,.35);
-}
-
-.submission-list {
-  display: grid;
-  gap: 26px;
-  max-width: 1050px;
-  margin: 0 auto;
-}
-
-.submission-card {
-  position: relative;
-  overflow: hidden;
-  padding: 28px 30px 48px;
-  border: 2px solid #c9ad78;
-  border-radius: 16px;
-  background: linear-gradient(145deg, #f6f1e5, #e8dfcc);
-  color: #17251e;
-  box-shadow:
-    0 12px 32px rgba(0,0,0,.35),
-    inset 0 0 0 3px rgba(255,255,255,.45);
-  transition: opacity .35s ease, transform .35s ease, box-shadow .35s ease;
-}
-
-.card-exiting {
-  opacity: 0;
-  transform: translateX(55px) scale(.97);
-}
-
-.card-incoming {
-  animation: incomingGlow 1.5s ease;
-}
-
-@keyframes incomingGlow {
-  0% {
-    box-shadow: 0 0 0 rgba(220,190,125,0);
-  }
-  35% {
-    box-shadow: 0 0 35px rgba(220,190,125,.8);
-  }
-  100% {
-    box-shadow: 0 12px 32px rgba(0,0,0,.35);
-  }
-}
-
-.playing-card-corner {
-  position: absolute;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  line-height: 1;
-  color: #183d2d;
-  font-family: Georgia, serif;
-}
-
-.playing-card-corner strong {
-  font-size: 25px;
-  font-weight: 900;
-}
-
-.playing-card-corner span {
-  margin-top: 3px;
-  color: #b08c51;
-  font-size: 20px;
-}
-
-.corner-top {
-  top: 13px;
-  left: 17px;
-}
-
-.corner-bottom {
-  right: 17px;
-  bottom: 12px;
-  transform: rotate(180deg);
-}
-
-.submission-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 15px;
-  padding-left: 48px;
-}
-
-.viewer-label {
-  color: #826a43;
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 2px;
-}
-
-.username {
-  margin: 5px 0;
-  color: #183d2d;
-  font-size: 20px;
-}
-
-.submission-date {
-  color: #746e61;
-  font-size: 11px;
-}
-
-.status-badge {
-  padding: 8px 12px;
-  border: 1px solid currentColor;
-  border-radius: 20px;
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 1px;
-}
-
-.status-pending {
-  color: #896a32;
-}
-
-.status-accepted {
-  color: #28633e;
-}
-
-.status-declined {
-  color: #9c4141;
-}
-
-.card-brand-line {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 25px;
-  color: #8b744c;
-  font-family: Georgia, serif;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 2px;
-}
-
-.card-divider {
-  height: 1px;
-  margin: 12px 0 22px;
-  background: linear-gradient(90deg, transparent, #b99b65, transparent);
-}
-
-.question-title {
-  margin-bottom: 17px;
-}
-
-.question-type {
-  color: #766d5e;
-  font-size: 9px;
-  font-weight: 900;
-  letter-spacing: 2px;
-}
-
-.question-title h3 {
-  margin: 6px 0 0;
-  color: #183d2d;
-  font-family: Georgia, serif;
-  font-size: 22px;
-  font-weight: 500;
-}
-
-.trade-grid {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: stretch;
-  gap: 14px;
-  padding: 16px;
-  border: 3px solid #c9ad78;
-  border-radius: 15px;
-  background:
-    repeating-linear-gradient(
-      45deg,
-      rgba(255,255,255,.018) 0px,
-      rgba(255,255,255,.018) 2px,
-      transparent 2px,
-      transparent 5px
-    ),
-    radial-gradient(ellipse at center, #18543b, #0b3425 75%);
-  box-shadow: inset 0 0 35px rgba(0,0,0,.4);
-}
-
-.trade-side {
-  min-width: 0;
-  padding: 13px;
-  border: 1px solid #b89b67;
-  border-radius: 10px;
-  background: rgba(5,28,20,.72);
-}
-
-.side-heading {
-  margin: 0 0 12px;
-  color: #e6d2a6;
-  font-size: 10px;
-  letter-spacing: 2px;
-}
-
-.trade-middle {
-  display: flex;
-  align-items: center;
-  color: #e6d2a6;
-  font-size: 25px;
-}
-
-.player-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  margin-bottom: 9px;
-  padding: 8px;
-  border: 1px solid #55564e;
-  border-radius: 7px;
-  background: linear-gradient(135deg, #292d2a, #111412);
-  color: white;
-}
-
-.player-bar:last-child {
-  margin-bottom: 0;
-}
-
-.player-image, .player-placeholder {
-  flex: 0 0 42px;
-  width: 42px;
-  height: 42px;
-  border-radius: 6px;
-  object-fit: cover;
-  background: #333a34;
-}
-
-.player-placeholder {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #d6c18f;
-  font-family: Georgia, serif;
-  font-weight: 900;
-}
-
-.player-details {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  min-width: 0;
-}
-
-.player-details strong {
-  overflow: hidden;
-  color: #fff;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.player-details span {
-  color: #c9ad78;
-  font-size: 9px;
-  letter-spacing: 1px;
-}
-
-.no-players {
-  color: #ded6c5;
-  font-size: 12px;
-}
-
-.start-sit-panel {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  padding: 15px;
-  border: 2px solid #c9ad78;
-  border-radius: 12px;
-  background: radial-gradient(ellipse at center, #18543b, #0b3425);
-}
-
-.start-sit-panel .player-bar {
-  margin: 0;
-}
-
-.action-buttons {
-  display: flex;
-  justify-content: flex-end;
-  gap: 12px;
-  margin-top: 22px;
-}
-
-.accept-button, .decline-button {
-  min-width: 130px;
-  padding: 13px 22px;
-  border-radius: 7px;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 2px;
-  transition: transform .2s ease, box-shadow .2s ease;
-}
-
-.accept-button:hover, .decline-button:hover {
-  transform: translateY(-2px);
-}
-
-.accept-button {
-  border: 1px solid #e4cc98;
-  background: linear-gradient(135deg, #e0c894, #aa8950);
-  color: #17150f;
-  box-shadow: 0 4px 15px rgba(169,137,80,.2);
-}
-
-.decline-button {
-  border: 1px solid #b99b65;
-  background: linear-gradient(135deg, #252825, #101210);
-  color: #e6d2a6;
-}
-
-.accept-button:disabled, .decline-button:disabled {
-  cursor: not-allowed;
-  opacity: .55;
-}
-
-.completed-label {
-  margin-top: 20px;
-  color: #66563b;
-  font-size: 10px;
-  font-weight: 900;
-  letter-spacing: 1px;
-  text-align: right;
-}
-
-.empty-state {
-  padding: 55px 20px;
-  text-align: center;
-}
-
-.empty-xo {
-  color: #d5bd8b;
-  font-family: Georgia, serif;
-  font-size: 50px;
-  letter-spacing: 7px;
-}
-
-.empty-state h2 {
-  color: #f1e8d4;
-  font-family: Georgia, serif;
-  font-weight: 500;
-}
-
-.empty-state p {
-  color: #b8c2b9;
-  font-size: 13px;
-}
-
-.error-banner {
-  margin: 15px 0;
-  padding: 12px;
-  border: 1px solid #a34b4b;
-  border-radius: 7px;
-  background: rgba(130,35,35,.2);
-  color: #ffc1c1;
-  font-size: 12px;
-}
-
-.dashboard-footer {
-  padding: 25px 0 5px;
-  color: #8f8c7e;
-  font-size: 9px;
-  letter-spacing: 3px;
-  text-align: center;
-}
-
-.dashboard-footer span {
-  color: #c9ad78;
-}
-
-@media (max-width: 700px) {
-  .admin-page {
-    padding: 20px 14px;
+  * {
+    box-sizing: border-box;
   }
 
-  .dashboard-header {
-    align-items: flex-start;
+  .casino-table {
+    width: 100%;
+    min-height: calc(100vh - 32px);
+    max-width: 1800px;
+    margin: 0 auto;
+    padding: 24px;
+    border: 5px solid #9d7a3d;
+    border-radius: 34px;
+    outline: 2px solid #d6b76e;
+    outline-offset: -12px;
+    background:
+      radial-gradient(ellipse at 50% 42%, rgba(50,112,75,.48), transparent 65%),
+      repeating-linear-gradient(115deg, rgba(255,255,255,.012) 0px, rgba(255,255,255,.012) 1px, transparent 2px, transparent 5px),
+      radial-gradient(ellipse at center, #20543b 0%, #123b2b 62%, #0b2a1e 100%);
+    box-shadow:
+      inset 0 0 0 5px #192019,
+      inset 0 0 70px rgba(0,0,0,.6),
+      0 20px 70px rgba(0,0,0,.65);
+    position: relative;
+    overflow: hidden;
   }
 
-  .header-controls {
-    flex-direction: column;
-    align-items: flex-end;
+  .top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    flex-wrap: wrap;
+    padding: 4px 12px 20px;
+    border-bottom: 1px solid rgba(232,199,125,.38);
+  }
+
+  .brand {
+    color: #f3f1eb;
+    font-size: clamp(30px, 4vw, 43px);
+    font-weight: 900;
+    letter-spacing: 3px;
+    margin: 0;
+    text-shadow: 0 2px 8px rgba(0,0,0,.5);
+  }
+
+  .brand span {
+    color: ${gold};
+  }
+
+  .eyebrow {
+    color: #c9b98f;
+    font-size: 10px;
+    letter-spacing: 4px;
+    margin: 7px 0 0;
+  }
+
+  .top-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
     gap: 10px;
+    flex-wrap: wrap;
   }
 
-  .sound-controls input {
-    width: 65px;
+  .sound-control {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 10px;
+    background: rgba(0,0,0,.24);
+    border: 1px solid rgba(232,199,125,.42);
+    border-radius: 9px;
   }
 
-  .dashboard-heading {
-    align-items: flex-start;
+  .sound-control input {
+    width: 85px;
+    accent-color: ${gold};
+    cursor: pointer;
   }
 
-  .refresh-button {
-    margin-top: 20px;
+  .volume-number {
+    min-width: 34px;
+    color: #e5d5ad;
+    font-size: 10px;
   }
 
-  .submission-card {
-    padding: 23px 15px 45px;
+  .small-control, .end-stream-button {
+    padding: 10px 12px;
+    border-radius: 8px;
+    background: linear-gradient(#343a35, #171d19);
+    color: #f4ead2;
+    border: 1px solid #92794d;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+
+  .end-stream-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 10px 16px;
+    background: linear-gradient(#853c32, #4e211d);
+    border: 1px solid #c17b62;
+    color: #fff2e8;
+    white-space: nowrap;
+    box-shadow: 0 0 12px rgba(193,123,98,.18);
+  }
+
+  button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
+  .table-status {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    padding: 16px 8px 10px;
+    color: #e3d2a9;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 2px;
+  }
+
+  .status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #78d28d;
+    box-shadow: 0 0 10px #78d28d;
+  }
+
+  .status-divider {
+    color: #8d7950;
+  }
+
+  .view-tabs {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin: 8px 0 20px;
+  }
+
+  .tab {
+    padding: 10px 16px;
+    border-radius: 7px;
+    border: 1px solid rgba(232,199,125,.45);
+    background: rgba(0,0,0,.22);
+    color: #e8d8b5;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+
+  .active-tab {
+    color: #17140e;
+    background: linear-gradient(135deg, #f0d99c, #b58b49);
+    border-color: #f5dda1;
+    box-shadow: 0 0 13px rgba(232,199,125,.2);
+  }
+
+  .refresh-tab {
+    margin-left: 10px;
+  }
+
+  .main-table-area {
+    min-height: 380px;
+    padding: 12px 0 20px;
+  }
+
+  .current-heading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    color: #f0dba8;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: 4px;
+    text-align: center;
+    margin: 8px 0 22px;
+  }
+
+  .gold-line {
+    width: min(15vw, 130px);
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #d4b46d);
+  }
+
+  .gold-line:last-child {
+    transform: rotate(180deg);
+  }
+
+  .current-submission {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 210px;
+    align-items: center;
+    gap: 25px;
+    max-width: 1250px;
+    margin: 0 auto;
+    padding: 24px;
+    border: 1px solid rgba(226,195,128,.55);
+    border-radius: 20px;
+    background: linear-gradient(145deg, rgba(8,26,18,.82), rgba(15,48,33,.82));
+    box-shadow:
+      inset 0 1px 0 rgba(255,255,255,.07),
+      0 12px 30px rgba(0,0,0,.24);
+  }
+
+  .submission-content {
+    min-width: 0;
+  }
+
+  .submission-topline, .history-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .username {
+    color: #f1d38e;
+    font-size: 21px;
+    font-weight: 900;
+    overflow-wrap: anywhere;
+  }
+
+  .submission-time {
+    color: #b5b7ad;
+    font-size: 11px;
+    margin: 5px 0;
+  }
+
+  .pending-badge, .accepted-badge, .declined-badge {
+    padding: 7px 12px;
+    border: 1px solid #d3b16b;
+    border-radius: 30px;
+    color: #f0d89f;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 1px;
+  }
+
+  .question-title {
+    color: #f2e9d5;
+    font-size: 14px;
+    letter-spacing: 3px;
+    margin: 22px 0 13px;
   }
 
   .trade-grid {
-    grid-template-columns: 1fr;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 13px;
   }
 
-  .trade-middle {
-    justify-content: center;
-    transform: rotate(90deg);
-  }
-
-  .start-sit-panel {
-    grid-template-columns: 1fr;
-  }
-
-  .action-buttons {
-    gap: 8px;
-  }
-
-  .accept-button, .decline-button {
+  .trade-side {
     min-width: 0;
-    flex: 1;
-    padding: 13px 8px;
+    padding: 13px;
+    border-radius: 12px;
   }
-}
+
+  .trade-side h3, .start-sit-area h3 {
+    font-size: 12px;
+    letter-spacing: 2px;
+    margin: 0 0 12px;
+  }
+
+  .give-side {
+    background: rgba(75,35,32,.48);
+    border: 1px solid rgba(187,105,89,.55);
+  }
+
+  .give-side h3 {
+    color: #e7a49a;
+  }
+
+  .get-side {
+    background: rgba(24,67,43,.55);
+    border: 1px solid rgba(113,175,123,.55);
+  }
+
+  .get-side h3 {
+    color: #a4e1ad;
+  }
+
+  .player-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px;
+    margin-bottom: 7px;
+    border: 1px solid rgba(255,255,255,.1);
+    border-radius: 8px;
+    background: rgba(0,0,0,.28);
+    min-width: 0;
+  }
+
+  .player-bar img, .player-placeholder {
+    width: 43px;
+    height: 43px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    object-fit: cover;
+    background: #38483e;
+    border: 1px solid rgba(232,199,125,.4);
+  }
+
+  .player-placeholder {
+    display: grid;
+    place-items: center;
+    color: #e8c77d;
+    font-weight: 900;
+  }
+
+  .player-info {
+    min-width: 0;
+  }
+
+  .player-info strong {
+    display: block;
+    color: #fff;
+    font-size: 13px;
+    overflow-wrap: anywhere;
+  }
+
+  .player-info span {
+    display: block;
+    color: #c3c5bd;
+    font-size: 10px;
+    margin-top: 4px;
+  }
+
+  .no-players {
+    color: #c5bda9;
+    font-size: 12px;
+  }
+
+  .start-sit-area {
+    max-width: 700px;
+    padding: 15px;
+    border: 1px solid rgba(232,199,125,.35);
+    border-radius: 12px;
+    background: rgba(0,0,0,.2);
+  }
+
+  .start-sit-area h3 {
+    color: #e8c77d;
+  }
+
+  .decision-buttons {
+    display: flex;
+    gap: 12px;
+    margin-top: 17px;
+  }
+
+  .decision-buttons button {
+    flex: 1;
+    padding: 14px;
+    border-radius: 9px;
+    color: white;
+    font-size: 12px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    cursor: pointer;
+  }
+
+  .accept-button {
+    border: 1px solid #8ac69b;
+    background: linear-gradient(135deg, #28764a, #16452e);
+    box-shadow: 0 4px 14px rgba(0,0,0,.2);
+  }
+
+  .decline-button {
+    border: 1px solid #c98275;
+    background: linear-gradient(135deg, #8b4038, #542622);
+    box-shadow: 0 4px 14px rgba(0,0,0,.2);
+  }
+
+  .chip-wrap {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+
+  .chip {
+    width: 190px;
+    height: 190px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    padding: 13px;
+    background:
+      repeating-conic-gradient(
+        from 0deg,
+        #e7d29d 0deg 9deg,
+        #76572c 9deg 13deg,
+        #e7d29d 13deg 22deg
+      );
+    box-shadow:
+      0 12px 28px rgba(0,0,0,.6),
+      inset 0 0 0 3px #f4dfaa,
+      inset 0 0 0 7px #6b512e;
+  }
+
+  .chip-inner {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    border: 3px double #d9bd7c;
+    background:
+      radial-gradient(circle at 35% 28%, #3b4540, #141a17 70%);
+    box-shadow: inset 0 0 20px rgba(0,0,0,.8);
+  }
+
+  .chip-label, .chip-bottom {
+    color: #d9c18b;
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 3px;
+  }
+
+  .chip-number {
+    color: #f6dfaa;
+    font-size: 43px;
+    font-weight: 900;
+    text-shadow: 0 2px 10px rgba(0,0,0,.8);
+    margin: 5px 0;
+  }
+
+  .empty-table {
+    min-height: 310px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    color: #d9cba9;
+    border: 1px dashed rgba(232,199,125,.35);
+    border-radius: 16px;
+    background: rgba(0,0,0,.12);
+    padding: 25px;
+  }
+
+  .empty-table h2 {
+    color: #f0d89f;
+    letter-spacing: 3px;
+    font-size: 16px;
+  }
+
+  .empty-table p, .empty-table span {
+    color: #c0c5bc;
+    font-size: 12px;
+  }
+
+  .empty-chip {
+    display: grid;
+    place-items: center;
+    width: 75px;
+    height: 75px;
+    border-radius: 50%;
+    border: 5px dashed #c9a762;
+    color: #f0d89f;
+    font-size: 22px;
+    font-weight: 900;
+  }
+
+  .queue-section {
+    display: grid;
+    grid-template-columns: 120px repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    align-items: stretch;
+    margin-top: 24px;
+    padding: 12px;
+    border: 1px solid #b18b50;
+    border-radius: 12px;
+    background: linear-gradient(90deg, rgba(8,19,13,.88), rgba(19,54,37,.85));
+    box-shadow: inset 0 0 15px rgba(0,0,0,.3);
+  }
+
+  .queue-label, .queue-name {
+    min-width: 0;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 9px;
+    border-radius: 7px;
+    text-align: center;
+    overflow: hidden;
+  }
+
+  .queue-label {
+    background: linear-gradient(135deg, #f0d99c, #b58b49);
+    color: #211b10;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 1px;
+  }
+
+  .queue-name {
+    border: 1px solid rgba(232,199,125,.48);
+    background: rgba(37,78,54,.8);
+    color: #fff3d7;
+    font-size: 13px;
+    font-weight: 800;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .queue-empty {
+    color: #a8b4a8;
+    border-style: dashed;
+    background: rgba(0,0,0,.14);
+    font-size: 10px;
+    letter-spacing: 1px;
+  }
+
+  .queue-note {
+    color: #bca77c;
+    font-size: 9px;
+    text-align: center;
+    letter-spacing: 2px;
+    margin: 9px 0 0;
+  }
+
+  .history-area {
+    max-width: 1250px;
+    margin: 0 auto;
+    padding: 10px 0 25px;
+  }
+
+  .history-item {
+    margin-bottom: 14px;
+    padding: 18px;
+    border: 1px solid rgba(232,199,125,.3);
+    border-radius: 12px;
+    background: rgba(4,19,12,.65);
+  }
+
+  .history-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .history-number {
+    color: #e8c77d;
+    font-weight: 900;
+  }
+
+  .accepted-badge {
+    color: #a4e1ad;
+    border-color: #5d9c6d;
+  }
+
+  .declined-badge {
+    color: #e7a49a;
+    border-color: #a65e53;
+  }
+
+  .history-type {
+    color: #e8c77d;
+    font-size: 11px;
+    letter-spacing: 2px;
+    margin: 16px 0 10px;
+  }
+
+  .table-footer {
+    padding: 25px 0 5px;
+    text-align: center;
+    color: #bba77d;
+    font-size: 10px;
+    letter-spacing: 3px;
+  }
+
+  .table-footer span {
+    color: #f0d89f;
+    padding: 0 5px;
+  }
+
+  .error-banner {
+    margin: 12px 0;
+    padding: 12px;
+    border: 1px solid #b45c50;
+    border-radius: 8px;
+    color: #ffd0c8;
+    background: rgba(100,25,20,.5);
+    font-size: 12px;
+  }
+
+  .login-page {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .login-panel {
+    width: 100%;
+    max-width: 420px;
+    padding: 30px;
+    border: 2px solid #a8874c;
+    border-radius: 18px;
+    background: linear-gradient(145deg, #172a20, #101713);
+    box-shadow: 0 15px 50px rgba(0,0,0,.5);
+  }
+
+  .login-panel .brand {
+    text-align: center;
+    font-size: 42px;
+  }
+
+  .login-panel .eyebrow {
+    text-align: center;
+    margin-bottom: 28px;
+  }
+
+  .login-panel h2 {
+    text-align: center;
+    color: #f1dfb8;
+    margin-bottom: 24px;
+  }
+
+  .login-panel label {
+    display: block;
+    color: #e5d4ad;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    margin: 15px 0 7px;
+  }
+
+  .login-panel input {
+    width: 100%;
+    padding: 14px;
+    border: 1px solid #6d715e;
+    border-radius: 8px;
+    background: #101a14;
+    color: white;
+    outline: none;
+  }
+
+  .login-button {
+    width: 100%;
+    margin-top: 20px;
+    padding: 14px;
+    border: 0;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #f0d99c, #b58b49);
+    color: #20190e;
+    font-weight: 900;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+
+  .error {
+    color: #ff9999;
+    font-size: 12px;
+  }
+
+  @media (max-width: 800px) {
+    .casino-table {
+      padding: 17px;
+      border-width: 3px;
+      border-radius: 22px;
+    }
+
+    .current-submission {
+      grid-template-columns: 1fr;
+    }
+
+    .chip-wrap {
+      grid-row: 1;
+    }
+
+    .chip {
+      width: 130px;
+      height: 130px;
+    }
+
+    .chip-number {
+      font-size: 31px;
+    }
+
+    .trade-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 560px) {
+    .top-controls {
+      justify-content: flex-start;
+      width: 100%;
+    }
+
+    .sound-control {
+      flex-wrap: wrap;
+    }
+
+    .queue-section {
+      grid-template-columns: 1fr 1fr;
+    }
+
+    .queue-label {
+      grid-column: 1 / -1;
+    }
+
+    .queue-name {
+      min-height: 42px;
+    }
+
+    .decision-buttons {
+      flex-direction: column;
+    }
+
+    .current-submission {
+      padding: 15px;
+    }
+
+    .table-status {
+      font-size: 9px;
+      letter-spacing: 1px;
+    }
+
+    .refresh-tab {
+      margin-left: 0;
+    }
+  }
 `;
