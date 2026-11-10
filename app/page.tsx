@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 type Player = {
   id: string;
@@ -12,16 +13,6 @@ type Player = {
 };
 
 type QuestionType = "Trade" | "Start/Sit";
-
-type Submission = {
-  id: string;
-  tiktok: string;
-  type: QuestionType;
-  sending: string[];
-  receiving: string[];
-  players: string[];
-  createdAt: string;
-};
 
 type PlayerPickerProps = {
   label: string;
@@ -206,12 +197,11 @@ export default function Home() {
   const [loadingPlayers, setLoadingPlayers] = useState(true);
   const [playerError, setPlayerError] = useState("");
   const [retry, setRetry] = useState(0);
+  const [submitting, setSubmitting] = useState(false);
 
   const [sending, setSending] = useState<string[]>([""]);
   const [receiving, setReceiving] = useState<string[]>([""]);
   const [startSit, setStartSit] = useState<string[]>(["", ""]);
-
-  const [queue, setQueue] = useState<Submission[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -256,33 +246,6 @@ export default function Home() {
     };
   }, [retry]);
 
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(
-        localStorage.getItem("xo-trades") || "[]"
-      );
-
-      setQueue(
-        saved.map((item: any) => ({
-          id: item.id,
-          tiktok: item.tiktok || item.team || "@unknown",
-          type: item.type || "Trade",
-          sending: item.sending || [],
-          receiving: item.receiving || [],
-          players: item.players || [],
-          createdAt: item.createdAt || ""
-        }))
-      );
-    } catch {
-      setQueue([]);
-    }
-  }, []);
-
-  function saveQueue(updated: Submission[]) {
-    setQueue(updated);
-    localStorage.setItem("xo-trades", JSON.stringify(updated));
-  }
-
   function addPlayer(
     list: string[],
     setter: (value: string[]) => void,
@@ -322,7 +285,9 @@ export default function Home() {
     setStep(2);
   }
 
-  function submitQuestion() {
+  async function submitQuestion() {
+    if (submitting) return;
+
     if (!tiktok.trim()) {
       alert("Please enter your TikTok username.");
       return;
@@ -331,6 +296,15 @@ export default function Home() {
     const username = tiktok.trim().startsWith("@")
       ? tiktok.trim()
       : "@" + tiktok.trim();
+
+    if (!type) {
+      alert("Please choose a question type.");
+      return;
+    }
+
+    let givePlayers: Player[] = [];
+    let getPlayers: Player[] = [];
+    let selectedPlayers: Player[] = [];
 
     if (type === "Trade") {
       const send = sending.filter(Boolean);
@@ -341,22 +315,19 @@ export default function Home() {
         return;
       }
 
-      const submission: Submission = {
-        id: crypto.randomUUID(),
-        tiktok: username,
-        type: "Trade",
-        sending: send.map(id =>
-          players.find(p => p.id === id)?.name || id
-        ),
-        receiving: receive.map(id =>
-          players.find(p => p.id === id)?.name || id
-        ),
-        players: [],
-        createdAt: new Date().toLocaleTimeString()
-      };
+      givePlayers = send
+        .map(id => players.find(p => p.id === id))
+        .filter((p): p is Player => Boolean(p));
 
-      saveQueue([submission, ...queue]);
-    } else if (type === "Start/Sit") {
+      getPlayers = receive
+        .map(id => players.find(p => p.id === id))
+        .filter((p): p is Player => Boolean(p));
+
+      if (givePlayers.length !== send.length || getPlayers.length !== receive.length) {
+        alert("One of the selected players could not be found. Please select them again.");
+        return;
+      }
+    } else {
       const selected = startSit.filter(Boolean);
 
       if (selected.length < 2) {
@@ -364,33 +335,59 @@ export default function Home() {
         return;
       }
 
-      const submission: Submission = {
-        id: crypto.randomUUID(),
-        tiktok: username,
-        type: "Start/Sit",
-        sending: [],
-        receiving: [],
-        players: selected.map(id =>
-          players.find(p => p.id === id)?.name || id
-        ),
-        createdAt: new Date().toLocaleTimeString()
-      };
+      selectedPlayers = selected
+        .map(id => players.find(p => p.id === id))
+        .filter((p): p is Player => Boolean(p));
 
-      saveQueue([submission, ...queue]);
+      if (selectedPlayers.length !== selected.length) {
+        alert("One of the selected players could not be found. Please select them again.");
+        return;
+      }
     }
 
-    alert("Your question has been submitted!");
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-    setStep(1);
-    setTiktok("");
-    setType(null);
-    setSending([""]);
-    setReceiving([""]);
-    setStartSit(["", ""]);
-  }
+    if (!supabaseUrl || !supabaseKey) {
+      alert("The submission system is not configured yet. Please try again later.");
+      return;
+    }
 
-  function removeTrade(id: string) {
-    saveQueue(queue.filter(item => item.id !== id));
+    setSubmitting(true);
+
+    try {
+      const supabase = createClient(supabaseUrl, supabaseKey);
+
+      const { error } = await supabase
+        .from("submissions")
+        .insert({
+          tiktok_username: username,
+          submission_type: type === "Trade" ? "trade" : "start_sit",
+          give_players: givePlayers,
+          get_players: getPlayers,
+          players: selectedPlayers
+        });
+
+      if (error) {
+        console.error("Supabase submission error:", error);
+        alert("Your question could not be submitted. Please try again.");
+        return;
+      }
+
+      alert("Your question has been submitted!");
+
+      setStep(1);
+      setTiktok("");
+      setType(null);
+      setSending([""]);
+      setReceiving([""]);
+      setStartSit(["", ""]);
+    } catch (error) {
+      console.error("Submission error:", error);
+      alert("Something went wrong while submitting. Please try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   const allSelected = [...sending, ...receiving];
@@ -552,8 +549,9 @@ export default function Home() {
                   <button
                     style={{ marginTop: 22 }}
                     onClick={submitQuestion}
+                    disabled={submitting}
                   >
-                    SUBMIT TRADE QUESTION
+                    {submitting ? "SUBMITTING..." : "SUBMIT TRADE QUESTION"}
                   </button>
                 </>
               )}
@@ -602,8 +600,9 @@ export default function Home() {
                   <button
                     style={{ marginTop: 22 }}
                     onClick={submitQuestion}
+                    disabled={submitting}
                   >
-                    SUBMIT START / SIT QUESTION
+                    {submitting ? "SUBMITTING..." : "SUBMIT START / SIT QUESTION"}
                   </button>
                 </>
               )}
@@ -611,42 +610,6 @@ export default function Home() {
           )}
         </section>
       )}
-
-      <section className="panel">
-        <h2>
-          Submission Queue{" "}
-          <span className="count">{queue.length}</span>
-        </h2>
-
-        {queue.length === 0 && (
-          <p className="empty">No questions submitted yet.</p>
-        )}
-
-        {queue.map(item => (
-          <article className="trade" key={item.id}>
-            <strong>{item.tiktok}</strong>
-            <small>{item.createdAt}</small>
-
-            <h3>{item.type.toUpperCase()}</h3>
-
-            {item.type === "Trade" ? (
-              <>
-                <p><b>SENDS:</b> {item.sending.join(", ")}</p>
-                <p><b>RECEIVES:</b> {item.receiving.join(", ")}</p>
-              </>
-            ) : (
-              <p><b>PLAYERS:</b> {item.players.join(", ")}</p>
-            )}
-
-            <button
-              className="remove"
-              onClick={() => removeTrade(item.id)}
-            >
-              REMOVE
-            </button>
-          </article>
-        ))}
-      </section>
 
       <footer>ASKXO · YOUR FANTASY QUESTIONS ANSWERED</footer>
     </main>
