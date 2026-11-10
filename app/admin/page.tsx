@@ -313,7 +313,7 @@ export default function AdminPage() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      if (supabase) supabase.removeChannel(channel);
     };
   }, [session, loadSubmissions]);
 
@@ -481,8 +481,9 @@ export default function AdminPage() {
   async function submitStartSitPicks(item: Submission) {
     if (!supabase || processingId || resetting) return;
 
-    if (selectedPlayerIds.length < 2 || selectedPlayerIds.length > 3) {
-      alert("Please select 2 or 3 players before submitting your picks.");
+    // Allow 1, 2, or 3 picks. Do not require 2.
+    if (selectedPlayerIds.length < 1 || selectedPlayerIds.length > 3) {
+      alert("Please select at least 1 player before submitting your picks.");
       return;
     }
 
@@ -869,11 +870,11 @@ export default function AdminPage() {
                         <>
                           <div className="start-sit-layout">
                             <div className="start-sit-area">
-                              <h3>SELECT 2 OR 3 PLAYERS</h3>
+                              <h3>SELECT 1 OR MORE PLAYERS</h3>
 
                               <p className="selection-instructions">
                                 Click the players you want to START. Selected
-                                players will turn green.
+                                players will turn green. Choose up to 3.
                               </p>
 
                               {currentSubmission.players?.map(
@@ -895,7 +896,7 @@ export default function AdminPage() {
                               )}
 
                               <div className="selection-count">
-                                {selectedPlayerIds.length} OF 2–3 SELECTED
+                                {selectedPlayerIds.length} OF 3 SELECTED
                               </div>
                             </div>
 
@@ -903,8 +904,8 @@ export default function AdminPage() {
                               <div className="submit-panel-icon">★</div>
                               <h3>YOUR START ’EM PICKS</h3>
                               <p>
-                                Select 2 or 3 players from the list, then submit
-                                your picks here.
+                                Select 1, 2, or 3 players from the list, then
+                                submit your picks here.
                               </p>
 
                               <div className="submit-selection-number">
@@ -918,7 +919,7 @@ export default function AdminPage() {
                                 disabled={
                                   !!processingId ||
                                   resetting ||
-                                  selectedPlayerIds.length < 2 ||
+                                  selectedPlayerIds.length < 1 ||
                                   selectedPlayerIds.length > 3
                                 }
                                 onClick={() =>
@@ -931,8 +932,8 @@ export default function AdminPage() {
                               </button>
 
                               <div className="submit-panel-footnote">
-                                {selectedPlayerIds.length < 2
-                                  ? "CHOOSE AT LEAST 2 PLAYERS"
+                                {selectedPlayerIds.length < 1
+                                  ? "CHOOSE AT LEAST 1 PLAYER"
                                   : selectedPlayerIds.length > 3
                                     ? "MAXIMUM 3 PLAYERS"
                                     : "READY TO SUBMIT"}
@@ -1555,8 +1556,6 @@ const styles = `
     font-size: 12px;
   }
 
-  /* START/SIT: players on the left, submit panel on the right */
-
   .start-sit-layout {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(230px, 290px);
@@ -1644,8 +1643,6 @@ const styles = `
     letter-spacing: 2px;
     text-align: center;
   }
-
-  /* The submit control is a separate panel beside the players. */
 
   .start-sit-submit-area {
     align-self: center;
@@ -1736,8 +1733,6 @@ const styles = `
     letter-spacing: 1px;
     margin-top: 12px;
   }
-
-  /* Poker-table-style viewer notes */
 
   .comment-box {
     position: relative;
