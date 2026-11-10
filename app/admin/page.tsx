@@ -1,7 +1,14 @@
 
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import { createClient, type Session } from "@supabase/supabase-js";
 
 type Player = {
@@ -25,6 +32,13 @@ type Submission = {
   processed_at: string | null;
 };
 
+type DecisionPopup = {
+  status: "accepted" | "declined";
+  submissionType: "trade" | "start_sit";
+  username: string;
+  number?: number;
+};
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -38,9 +52,7 @@ const gold = "#e8c77d";
 let decisionAudioContext: AudioContext | null = null;
 
 function queueName(username: string) {
-  return username.length > 8
-    ? `${username.slice(0, 8)}...`
-    : username;
+  return username.length > 8 ? `${username.slice(0, 8)}...` : username;
 }
 
 function PlayerBar({ player }: { player: Player }) {
@@ -107,14 +119,8 @@ function playDecisionSound(
     oscillator.frequency.setValueAtTime(frequency, start);
 
     gain.gain.setValueAtTime(0.001, start);
-    gain.gain.exponentialRampToValueAtTime(
-      loudness,
-      start + 0.015
-    );
-    gain.gain.exponentialRampToValueAtTime(
-      0.001,
-      start + duration
-    );
+    gain.gain.exponentialRampToValueAtTime(loudness, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
 
     oscillator.connect(gain);
     gain.connect(master);
@@ -155,6 +161,42 @@ export default function AdminPage() {
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(80);
 
+  // Animation states
+  const [incomingAnimationId, setIncomingAnimationId] = useState("");
+  const [exitingId, setExitingId] = useState("");
+  const [exitDecision, setExitDecision] = useState<
+    "accepted" | "declined" | ""
+  >("");
+  const [decisionPopup, setDecisionPopup] =
+    useState<DecisionPopup | null>(null);
+
+  // Track previous submissions so initial page load does not animate everything.
+  const submissionsRef = useRef<Submission[]>([]);
+  const hasLoadedSubmissions = useRef(false);
+
+  const pageStyle: CSSProperties = {
+    height: "100dvh",
+    minHeight: 0,
+    width: "100%",
+    padding: 10,
+    boxSizing: "border-box",
+    overflow: "hidden",
+    color: "#fff",
+    fontFamily: "Arial, sans-serif",
+    background:
+      "radial-gradient(ellipse at center, #173c2c 0%, #0c241b 70%, #080e0b 100%)",
+  };
+
+  const triggerIncomingAnimation = useCallback((id: string) => {
+    if (!id) return;
+
+    setIncomingAnimationId(id);
+
+    window.setTimeout(() => {
+      setIncomingAnimationId((current) => (current === id ? "" : current));
+    }, 1100);
+  }, []);
+
   const loadSubmissions = useCallback(async () => {
     if (!supabase) return;
 
@@ -167,16 +209,42 @@ export default function AdminPage() {
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error(error);
-      setLoadError(
-        "Couldn't load submissions. Check your Supabase access policies."
-      );
-    } else {
-      setSubmissions((data || []) as Submission[]);
+      console.error("Loading submissions failed:", error);
+      setLoadError(`Couldn't load submissions: ${error.message}`);
+      setLoading(false);
+      return;
     }
 
+    const nextRows = (data || []) as Submission[];
+
+    // Animate a newly arrived pending submission, but not the first page load.
+    if (hasLoadedSubmissions.current) {
+      const previousIds = new Set(
+        submissionsRef.current.map((item) => item.id)
+      );
+
+      const newlyArrived = nextRows
+        .filter(
+          (item) =>
+            item.status === "pending" && !previousIds.has(item.id)
+        )
+        .sort(
+          (a, b) =>
+            new Date(a.created_at).getTime() -
+            new Date(b.created_at).getTime()
+        );
+
+      if (newlyArrived.length > 0) {
+        triggerIncomingAnimation(newlyArrived[0].id);
+      }
+    }
+
+    submissionsRef.current = nextRows;
+    hasLoadedSubmissions.current = true;
+
+    setSubmissions(nextRows);
     setLoading(false);
-  }, []);
+  }, [triggerIncomingAnimation]);
 
   useEffect(() => {
     if (!supabase) {
@@ -190,7 +258,7 @@ export default function AdminPage() {
     });
 
     const {
-      data: { subscription }
+      data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, newSession) => {
       setSession(newSession);
     });
@@ -201,6 +269,8 @@ export default function AdminPage() {
   useEffect(() => {
     if (!session || !supabase) {
       setSubmissions([]);
+      submissionsRef.current = [];
+      hasLoadedSubmissions.current = false;
       return;
     }
 
@@ -213,7 +283,7 @@ export default function AdminPage() {
         {
           event: "*",
           schema: "public",
-          table: "submissions"
+          table: "submissions",
         },
         () => {
           loadSubmissions();
@@ -226,7 +296,18 @@ export default function AdminPage() {
     };
   }, [session, loadSubmissions]);
 
-  async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
+  // Automatically dismiss the decision popup after a few seconds.
+  useEffect(() => {
+    if (!decisionPopup) return;
+
+    const timeout = window.setTimeout(() => {
+      setDecisionPopup(null);
+    }, 2800);
+
+    return () => window.clearTimeout(timeout);
+  }, [decisionPopup]);
+
+  async function handleLogin(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!supabase) return;
 
@@ -235,11 +316,11 @@ export default function AdminPage() {
 
     const { error } = await supabase.auth.signInWithPassword({
       email,
-      password
+      password,
     });
 
     if (error) {
-      setLoginError("Login failed. Check your email and password.");
+      setLoginError(error.message);
     }
 
     setLoggingIn(false);
@@ -250,6 +331,8 @@ export default function AdminPage() {
 
     await supabase.auth.signOut();
     setSubmissions([]);
+    submissionsRef.current = [];
+    hasLoadedSubmissions.current = false;
     setPassword("");
   }
 
@@ -264,40 +347,63 @@ export default function AdminPage() {
 
     setResetting(true);
     setLoadError("");
+    setDecisionPopup(null);
+    setIncomingAnimationId("");
+    setExitingId("");
 
-    const { error } = await supabase.rpc("reset_askxo_submissions");
+    try {
+      const { error } = await supabase.rpc("reset_askxo_submissions");
 
-    if (error) {
-      console.error("Stream reset failed:", error);
-      setLoadError(
-        "End Stream failed. Check that the Supabase reset function has been created."
+      if (error) {
+        console.error("Stream reset failed:", error);
+
+        const message = `End Stream failed: ${error.message}`;
+
+        setLoadError(message);
+        alert(`${message}\n\nYour submissions have not been cleared.`);
+        return;
+      }
+
+      setSubmissions([]);
+      submissionsRef.current = [];
+      hasLoadedSubmissions.current = true;
+      setView("pending");
+
+      alert(
+        "STREAM ENDED!\n\nPending and History are empty. Your next submission will be #1."
       );
-      alert("End Stream failed. Your submissions have not been cleared.");
+
+      await loadSubmissions();
+    } catch (error) {
+      console.error("Unexpected stream reset error:", error);
+
+      const message =
+        error instanceof Error ? error.message : String(error);
+
+      setLoadError(`End Stream failed: ${message}`);
+      alert(`End Stream failed: ${message}`);
+    } finally {
       setResetting(false);
-      return;
     }
-
-    setSubmissions([]);
-    setView("pending");
-    setResetting(false);
-
-    alert(
-      "STREAM ENDED!\n\nPending and History are empty. Your next submission will be #1."
-    );
-
-    await loadSubmissions();
   }
 
   async function processSubmission(
     item: Submission,
     status: "accepted" | "declined"
   ) {
-    if (!supabase) return;
+    if (!supabase || processingId || resetting) return;
 
     setProcessingId(item.id);
+    setLoadError("");
+
+    // Animate the current submission away before updating the database.
+    setExitingId(item.id);
+    setExitDecision(status);
 
     try {
-      // Start or resume audio while the browser still has the button interaction.
+      await new Promise((resolve) => window.setTimeout(resolve, 580));
+
+      // Start or resume audio during the button interaction.
       if (typeof window !== "undefined" && "AudioContext" in window) {
         if (!decisionAudioContext) {
           decisionAudioContext = new AudioContext();
@@ -312,30 +418,50 @@ export default function AdminPage() {
         .from("submissions")
         .update({
           status,
-          processed_at: new Date().toISOString()
+          processed_at: new Date().toISOString(),
         })
         .eq("id", item.id);
 
       if (error) {
-        console.error(error);
-        alert("Couldn't update this submission. Please try again.");
-      } else {
-        if (!muted && volume > 0 && decisionAudioContext) {
-          playDecisionSound(
-            decisionAudioContext,
-            status,
-            volume
-          );
-        }
+        console.error("Submission update failed:", error);
+        setLoadError(`Couldn't update submission: ${error.message}`);
+        alert(`Couldn't update this submission: ${error.message}`);
+        return;
+      }
 
-        await loadSubmissions();
+      if (!muted && volume > 0 && decisionAudioContext) {
+        playDecisionSound(decisionAudioContext, status, volume);
+      }
+
+      // Show the confirmation popup.
+      setDecisionPopup({
+        status,
+        submissionType: item.submission_type,
+        username: item.tiktok_username,
+        number: item.submission_number,
+      });
+
+      // The next pending item becomes current. Animate it into place.
+      const nextSubmission = pending[1] ?? null;
+
+      await loadSubmissions();
+
+      if (nextSubmission) {
+        triggerIncomingAnimation(nextSubmission.id);
       }
     } catch (error) {
       console.error("Could not process submission:", error);
-      alert("Something went wrong. Please try again.");
-    }
 
-    setProcessingId("");
+      const message =
+        error instanceof Error ? error.message : String(error);
+
+      setLoadError(`Something went wrong: ${message}`);
+      alert(`Something went wrong: ${message}`);
+    } finally {
+      setExitingId("");
+      setExitDecision("");
+      setProcessingId("");
+    }
   }
 
   const pending = submissions
@@ -356,19 +482,6 @@ export default function AdminPage() {
 
   const currentSubmission = pending[0] ?? null;
   const nextUp = pending.slice(1, 5);
-
-  const pageStyle: React.CSSProperties = {
-    height: "100dvh",
-    minHeight: 0,
-    width: "100%",
-    padding: 10,
-    boxSizing: "border-box",
-    overflow: "hidden",
-    color: "#fff",
-    fontFamily: "Arial, sans-serif",
-    background:
-      "radial-gradient(ellipse at center, #173c2c 0%, #0c241b 70%, #080e0b 100%)"
-  };
 
   if (!supabase) {
     return (
@@ -535,7 +648,19 @@ export default function AdminPage() {
                     <span className="gold-line" />
                   </div>
 
-                  <div className="current-submission">
+                  <div
+                    className={[
+                      "current-submission",
+                      incomingAnimationId === currentSubmission.id
+                        ? "submission-enter"
+                        : "",
+                      exitingId === currentSubmission.id
+                        ? `submission-exit-${exitDecision}`
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
                     <div className="submission-content">
                       <div className="submission-topline">
                         <div>
@@ -661,13 +786,18 @@ export default function AdminPage() {
 
                 return (
                   <div
-                    className={item ? "queue-name" : "queue-name queue-empty"}
+                    className={[
+                      item ? "queue-name" : "queue-name queue-empty",
+                      item && incomingAnimationId === item.id
+                        ? "queue-entry"
+                        : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                     key={item?.id || `empty-${index}`}
                     title={item?.tiktok_username || "Waiting for submission"}
                   >
-                    {item
-                      ? queueName(item.tiktok_username)
-                      : "WAITING..."}
+                    {item ? queueName(item.tiktok_username) : "WAITING..."}
                   </div>
                 );
               })}
@@ -768,6 +898,42 @@ export default function AdminPage() {
           ASK XO <span>·</span> PRIVATE STREAMER CONTROL
         </footer>
       </div>
+
+      {decisionPopup && (
+        <div
+          className={`decision-popup-backdrop ${decisionPopup.status}`}
+          onClick={() => setDecisionPopup(null)}
+        >
+          <div
+            className={`decision-popup ${decisionPopup.status}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="popup-icon">
+              {decisionPopup.status === "accepted" ? "✓" : "✕"}
+            </div>
+
+            <p className="popup-eyebrow">
+              ASK XO · SUBMISSION #{decisionPopup.number ?? "—"}
+            </p>
+
+            <h2>
+              {decisionPopup.submissionType === "trade" ? "TRADE" : "QUESTION"}{" "}
+              {decisionPopup.status.toUpperCase()}!
+            </h2>
+
+            <p className="popup-username">
+              @{decisionPopup.username}
+            </p>
+
+            <button
+              type="button"
+              onClick={() => setDecisionPopup(null)}
+            >
+              CLOSE
+            </button>
+          </div>
+        </div>
+      )}
 
       <style jsx>{styles}</style>
     </main>
@@ -1007,6 +1173,91 @@ const styles = `
     box-shadow:
       inset 0 1px 0 rgba(255,255,255,.07),
       0 12px 30px rgba(0,0,0,.24);
+    transform-origin: center;
+    will-change: transform, opacity;
+  }
+
+  /* Incoming submission animation */
+  .submission-enter {
+    animation: submissionEnter .75s cubic-bezier(.2,.8,.2,1) both;
+  }
+
+  /* Accepted submissions swipe out to the right */
+  .submission-exit-accepted {
+    animation: submissionSwipeOutRight .58s ease-in forwards;
+    pointer-events: none;
+  }
+
+  /* Declined submissions swipe out to the left */
+  .submission-exit-declined {
+    animation: submissionSwipeOutLeft .58s ease-in forwards;
+    pointer-events: none;
+  }
+
+  @keyframes submissionEnter {
+    0% {
+      opacity: 0;
+      transform: translateY(35px) scale(.94);
+      filter: blur(4px);
+    }
+    70% {
+      opacity: 1;
+      transform: translateY(-3px) scale(1.01);
+      filter: blur(0);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      filter: blur(0);
+    }
+  }
+
+  @keyframes submissionSwipeOutRight {
+    0% {
+      opacity: 1;
+      transform: translateX(0) rotate(0) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translateX(115%) rotate(5deg) scale(.9);
+      filter: blur(3px);
+    }
+  }
+
+  @keyframes submissionSwipeOutLeft {
+    0% {
+      opacity: 1;
+      transform: translateX(0) rotate(0) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translateX(-115%) rotate(-5deg) scale(.9);
+      filter: blur(3px);
+    }
+  }
+
+  /* A new name briefly highlights in the Next Up queue */
+  .queue-entry {
+    animation: queueEntry .9s ease-out both;
+  }
+
+  @keyframes queueEntry {
+    0% {
+      opacity: 0;
+      transform: translateY(12px) scale(.94);
+      background: rgba(232,199,125,.55);
+      color: #17140e;
+    }
+    55% {
+      opacity: 1;
+      transform: translateY(-2px) scale(1.02);
+      background: rgba(232,199,125,.28);
+      color: #fff3d7;
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
   }
 
   .submission-content {
@@ -1224,8 +1475,7 @@ const styles = `
     align-items: center;
     justify-content: center;
     border: 3px double #d9bd7c;
-    background:
-      radial-gradient(circle at 35% 28%, #3b4540, #141a17 70%);
+    background: radial-gradient(circle at 35% 28%, #3b4540, #141a17 70%);
     box-shadow: inset 0 0 20px rgba(0,0,0,.8);
   }
 
@@ -1415,6 +1665,133 @@ const styles = `
     color: #ffd0c8;
     background: rgba(100,25,20,.5);
     font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  /* Accept / decline confirmation popup */
+  .decision-popup-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: grid;
+    place-items: center;
+    padding: 20px;
+    background: rgba(0,0,0,.72);
+    backdrop-filter: blur(5px);
+    animation: popupFadeIn .2s ease-out both;
+  }
+
+  .decision-popup {
+    width: min(460px, 100%);
+    padding: 34px 28px;
+    text-align: center;
+    border-radius: 22px;
+    background: linear-gradient(145deg, #17271e, #09140e);
+    border: 2px solid #e8c77d;
+    box-shadow:
+      0 25px 80px rgba(0,0,0,.7),
+      0 0 30px rgba(232,199,125,.2);
+    animation: popupPop .32s cubic-bezier(.2,.8,.2,1) both;
+  }
+
+  .decision-popup.accepted {
+    border-color: #8ac69b;
+    box-shadow:
+      0 25px 80px rgba(0,0,0,.7),
+      0 0 32px rgba(100,205,130,.2);
+  }
+
+  .decision-popup.declined {
+    border-color: #c98275;
+    box-shadow:
+      0 25px 80px rgba(0,0,0,.7),
+      0 0 32px rgba(205,100,90,.2);
+  }
+
+  .popup-icon {
+    width: 72px;
+    height: 72px;
+    display: grid;
+    place-items: center;
+    margin: 0 auto 18px;
+    border: 2px solid #e8c77d;
+    border-radius: 50%;
+    color: #f0d89f;
+    font-size: 38px;
+    font-weight: 900;
+    background: rgba(232,199,125,.1);
+  }
+
+  .accepted .popup-icon {
+    border-color: #8ac69b;
+    color: #a4e1ad;
+    background: rgba(100,205,130,.1);
+  }
+
+  .declined .popup-icon {
+    border-color: #c98275;
+    color: #e7a49a;
+    background: rgba(205,100,90,.1);
+  }
+
+  .popup-eyebrow {
+    color: #c9b98f;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 2px;
+  }
+
+  .decision-popup h2 {
+    color: #f0d89f;
+    font-size: clamp(24px, 4vw, 34px);
+    letter-spacing: 2px;
+    margin: 13px 0;
+  }
+
+  .decision-popup.accepted h2 {
+    color: #a4e1ad;
+  }
+
+  .decision-popup.declined h2 {
+    color: #e7a49a;
+  }
+
+  .popup-username {
+    color: #eee5d2;
+    font-size: 15px;
+    margin-bottom: 24px;
+  }
+
+  .decision-popup button {
+    min-width: 130px;
+    padding: 11px 22px;
+    border: 1px solid #d3b16b;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #f0d99c, #b58b49);
+    color: #211b10;
+    font-weight: 900;
+    letter-spacing: 2px;
+    cursor: pointer;
+  }
+
+  @keyframes popupFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @keyframes popupPop {
+    0% {
+      opacity: 0;
+      transform: translateY(20px) scale(.88);
+    }
+    75% {
+      opacity: 1;
+      transform: translateY(-3px) scale(1.02);
+    }
+    100% {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
   }
 
   .login-page {
@@ -1486,7 +1863,6 @@ const styles = `
     font-size: 12px;
   }
 
-  /* Shorter screens: compress the layout to keep the live table visible. */
   @media (max-height: 800px) {
     .casino-table {
       padding-top: 12px;
@@ -1628,6 +2004,17 @@ const styles = `
 
     .eyebrow {
       letter-spacing: 2px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .submission-enter,
+    .submission-exit-accepted,
+    .submission-exit-declined,
+    .queue-entry,
+    .decision-popup-backdrop,
+    .decision-popup {
+      animation-duration: .01ms !important;
     }
   }
 `;
