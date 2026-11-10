@@ -2,18 +2,20 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createClient, type Session } from "@supabase/supabase-js";
+import type { FormEvent } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 type Player = {
-  id: string;
+  id?: string;
   name: string;
-  position: string;
-  team: string;
-  imageUrl: string;
+  position?: string;
+  team?: string;
+  imageUrl?: string;
 };
 
 type Submission = {
   id: string;
+  submission_number: number;
   created_at: string;
   tiktok_username: string;
   submission_type: "trade" | "start_sit";
@@ -26,97 +28,157 @@ type Submission = {
 
 type SoundType = "incoming" | "swipe" | "accepted" | "declined";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
-const supabase =
-  supabaseUrl && supabaseKey
-    ? createClient(supabaseUrl, supabaseKey)
-    : null;
-
-const C = {
-  black: "#090909",
-  panel: "#151515",
-  panelLight: "#202020",
-  silver: "#d9d9d9",
-  white: "#f5f5f5",
-  muted: "#999999",
-  gold: "#c9ad78",
-  goldLight: "#e6d2a6",
-  goldDark: "#8e754b",
-  green: "#78bd91",
-  red: "#d58b8b",
-};
-
-function PlayerBar({ player }: { player: Player }) {
-  return (
-    <div className="player-bar">
-      <img
-        src={player.imageUrl}
-        alt=""
-        onError={(e) => {
-          e.currentTarget.style.visibility = "hidden";
-        }}
-      />
-      <div className="player-info">
-        <strong>{player.name}</strong>
-        <span>{player.position} · {player.team}</span>
-      </div>
-    </div>
-  );
-}
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 export default function AdminPage() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [checkingLogin, setCheckingLogin] = useState(true);
-
+  const [session, setSession] = useState<any>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [loading, setLoading] = useState(true);
   const [loggingIn, setLoggingIn] = useState(false);
 
   const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState("");
-  const [processingId, setProcessingId] = useState("");
-  const [view, setView] = useState<"pending" | "history">("pending");
+  const [activeTab, setActiveTab] = useState<"pending" | "history">("pending");
+  const [processingId, setProcessingId] = useState<string | null>(null);
+  const [exitingId, setExitingId] = useState<string | null>(null);
+  const [incomingId, setIncomingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
 
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(45);
-  const [newSubmissionId, setNewSubmissionId] = useState("");
-  const [exitingId, setExitingId] = useState("");
 
   const audioRef = useRef<AudioContext | null>(null);
-  const previousPendingIds = useRef<Set<string> | null>(null);
+  const knownIdsRef = useRef<Set<string>>(new Set());
+  const firstLoadRef = useRef(true);
 
-  // Create sound effects directly in the browser.
-  function playSound(type: SoundType) {
+  // Check whether the admin is logged in.
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) {
+        setSession(data.session);
+        setLoading(false);
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // Load submissions from Supabase.
+  const loadSubmissions = useCallback(async () => {
+    if (!session) return;
+
+    const { data, error: fetchError } = await supabase
+      .from("submissions")
+      .select("*")
+      .order("created_at", { ascending: true });
+
+    if (fetchError) {
+      setError(fetchError.message);
+      return;
+    }
+
+    const rows = (data || []) as Submission[];
+
+    if (firstLoadRef.current) {
+      knownIdsRef.current = new Set(rows.map((item) => item.id));
+      firstLoadRef.current = false;
+    } else {
+      const newItems = rows.filter(
+        (item) =>
+          !knownIdsRef.current.has(item.id) &&
+          item.status === "pending"
+      );
+
+      if (newItems.length > 0) {
+        const newest = newItems[newItems.length - 1];
+        setIncomingId(newest.id);
+        void playSound("incoming");
+
+        window.setTimeout(() => {
+          setIncomingId(null);
+        }, 1800);
+      }
+
+      rows.forEach((item) => knownIdsRef.current.add(item.id));
+    }
+
+    setSubmissions(rows);
+    setError("");
+  }, [session]);
+
+  // Refresh when logged in and listen for new submissions.
+  useEffect(() => {
+    if (!session) {
+      setSubmissions([]);
+      return;
+    }
+
+    void loadSubmissions();
+
+    const channel = supabase
+      .channel("askxo-submissions")
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "submissions",
+        },
+        () => {
+          void loadSubmissions();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [session, loadSubmissions]);
+
+  // Browser-generated sound effects.
+  async function playSound(type: SoundType) {
     if (muted || volume === 0 || typeof window === "undefined") return;
 
     try {
-      const AudioContextClass = window.AudioContext;
-
       if (!audioRef.current) {
-        audioRef.current = new AudioContextClass();
+        audioRef.current = new window.AudioContext();
       }
 
       const ctx = audioRef.current;
 
-      if (ctx.state === "suspended") {
-        void ctx.resume();
+      if (ctx.state !== "running") {
+        await ctx.resume();
       }
 
+      if (ctx.state !== "running") return;
+
       const master = ctx.createGain();
-      master.gain.value = volume / 100;
+      master.gain.value = (volume / 100) * 0.65;
       master.connect(ctx.destination);
 
       function tone(
         frequency: number,
-        start: number,
+        delay: number,
         duration: number,
         wave: OscillatorType = "sine",
         endFrequency?: number
       ) {
+        const start = ctx.currentTime + delay;
         const oscillator = ctx.createOscillator();
         const gain = ctx.createGain();
 
@@ -131,7 +193,7 @@ export default function AdminPage() {
         }
 
         gain.gain.setValueAtTime(0.0001, start);
-        gain.gain.linearRampToValueAtTime(0.25, start + 0.025);
+        gain.gain.linearRampToValueAtTime(0.18, start + 0.025);
         gain.gain.exponentialRampToValueAtTime(
           0.0001,
           start + duration
@@ -139,209 +201,84 @@ export default function AdminPage() {
 
         oscillator.connect(gain);
         gain.connect(master);
-
         oscillator.start(start);
-        oscillator.stop(start + duration + 0.02);
+        oscillator.stop(start + duration + 0.03);
       }
 
-      const now = ctx.currentTime;
-
       if (type === "incoming") {
-        tone(660, now, 0.25);
-        tone(880, now + 0.13, 0.35);
-        tone(1100, now + 0.26, 0.4);
+        tone(660, 0, 0.25);
+        tone(880, 0.13, 0.35);
+        tone(1100, 0.26, 0.4);
       }
 
       if (type === "swipe") {
-        tone(500, now, 0.3, "sawtooth", 100);
+        tone(500, 0, 0.3, "sawtooth", 100);
       }
 
       if (type === "accepted") {
-        tone(520, now, 0.2);
-        tone(660, now + 0.12, 0.2);
-        tone(880, now + 0.24, 0.35);
+        // Cash-register CHA-CHING!
+        tone(1318, 0, 0.38, "sine", 1760);
+        tone(1976, 0.09, 0.48, "triangle", 2637);
+        tone(988, 0.20, 0.38, "sine", 1318);
+        tone(1568, 0.34, 0.55, "sine", 2093);
+        tone(392, 0.05, 0.16, "triangle");
       }
 
       if (type === "declined") {
-        tone(440, now, 0.25, "triangle");
-        tone(330, now + 0.16, 0.3, "triangle");
-        tone(220, now + 0.32, 0.4, "triangle");
+        tone(440, 0, 0.25, "triangle");
+        tone(330, 0.16, 0.3, "triangle");
+        tone(220, 0.32, 0.4, "triangle");
       }
 
-      window.setTimeout(() => {
-        master.disconnect();
-      }, 1200);
-    } catch (error) {
-      console.warn("Sound could not play:", error);
+      window.setTimeout(() => master.disconnect(), 1600);
+    } catch (soundError) {
+      console.warn("Sound could not play:", soundError);
     }
   }
 
-  function unlockAudio() {
-    try {
-      if (!audioRef.current) {
-        audioRef.current = new window.AudioContext();
-      }
-
-      if (audioRef.current.state === "suspended") {
-        void audioRef.current.resume();
-      }
-    } catch {
-      // Audio is optional; dashboard remains functional without it.
-    }
+  async function playActionSounds(status: "accepted" | "declined") {
+    await playSound("swipe");
+    await new Promise((resolve) => window.setTimeout(resolve, 110));
+    await playSound(status);
   }
 
-  const loadSubmissions = useCallback(async () => {
-    if (!supabase) return;
-
-    setLoading(true);
-    setLoadError("");
-
-    const { data, error } = await supabase
-      .from("submissions")
-      .select("*")
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.error(error);
-      setLoadError(
-        "Couldn't load submissions. Check your Supabase access policies."
-      );
-    } else {
-      const rows = (data || []) as Submission[];
-      const pendingIds = new Set(
-        rows
-          .filter((item) => item.status === "pending")
-          .map((item) => item.id)
-      );
-
-      if (previousPendingIds.current === null) {
-        // First load: don't play an arrival sound for old submissions.
-        previousPendingIds.current = pendingIds;
-      } else {
-        const arrivals = rows.filter(
-          (item) =>
-            item.status === "pending" &&
-            !previousPendingIds.current?.has(item.id)
-        );
-
-        if (arrivals.length > 0) {
-          const newest = arrivals[arrivals.length - 1];
-
-          setNewSubmissionId(newest.id);
-          playSound("incoming");
-
-          window.setTimeout(() => {
-            setNewSubmissionId((current) =>
-              current === newest.id ? "" : current
-            );
-          }, 2000);
-        }
-
-        previousPendingIds.current = pendingIds;
-      }
-
-      setSubmissions(rows);
-    }
-
-    setLoading(false);
-  }, [muted, volume]);
-
-  useEffect(() => {
-    if (!supabase) {
-      setCheckingLogin(false);
-      return;
-    }
-
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
-      setCheckingLogin(false);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-    });
-
-    return () => subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!session || !supabase) {
-      setSubmissions([]);
-      previousPendingIds.current = null;
-      return;
-    }
-
-    loadSubmissions();
-
-    const channel = supabase
-      .channel("askxo-submissions")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "submissions",
-        },
-        () => {
-          loadSubmissions();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [session, loadSubmissions]);
-
-  async function handleLogin(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-
-    if (!supabase) return;
-
-    unlockAudio();
+  // Admin login.
+  async function handleLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     setLoggingIn(true);
     setLoginError("");
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { error: authError } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
 
-    if (error) {
-      setLoginError("Login failed. Check your email and password.");
+    if (authError) {
+      setLoginError(authError.message);
     }
 
     setLoggingIn(false);
   }
 
   async function handleLogout() {
-    if (!supabase) return;
-
     await supabase.auth.signOut();
     setSubmissions([]);
-    setPassword("");
-    previousPendingIds.current = null;
   }
 
+  // Accept or decline a submission.
   async function processSubmission(
     item: Submission,
     status: "accepted" | "declined"
   ) {
-    if (!supabase) return;
+    if (processingId) return;
 
-    unlockAudio();
     setProcessingId(item.id);
     setExitingId(item.id);
+    void playActionSounds(status);
 
-    playSound("swipe");
-    playSound(status);
-
-    // Give the outgoing card time to animate before updating the database.
     await new Promise((resolve) => window.setTimeout(resolve, 350));
 
-    const { error } = await supabase
+    const { error: updateError } = await supabase
       .from("submissions")
       .update({
         status,
@@ -349,158 +286,113 @@ export default function AdminPage() {
       })
       .eq("id", item.id);
 
-    if (error) {
-      console.error(error);
-      alert("Couldn't update this submission. Please try again.");
-    } else {
-      previousPendingIds.current?.delete(item.id);
-      await loadSubmissions();
+    if (updateError) {
+      setError(updateError.message);
+      setExitingId(null);
+      setProcessingId(null);
+      return;
     }
 
-    setExitingId("");
-    setProcessingId("");
+    setExitingId(null);
+    setProcessingId(null);
+    await loadSubmissions();
   }
 
   const pending = submissions.filter(
     (item) => item.status === "pending"
   );
 
-  const history = submissions.filter(
-    (item) => item.status !== "pending"
-  );
+  const history = submissions
+    .filter((item) => item.status !== "pending")
+    .sort(
+      (a, b) =>
+        new Date(b.processed_at || b.created_at).getTime() -
+        new Date(a.processed_at || a.created_at).getTime()
+    );
 
-  const visibleItems = view === "pending" ? pending : history;
+  const displayedSubmissions =
+    activeTab === "pending" ? pending : history;
 
-  const pageStyle: React.CSSProperties = {
-    minHeight: "100vh",
-    background:
-      "radial-gradient(ellipse at top, #242424 0%, #101010 45%, #070707 100%)",
-    color: C.white,
-    padding: "26px 16px",
-    fontFamily: "Arial, sans-serif",
-  };
+  function formatDate(date: string) {
+    return new Date(date).toLocaleString([], {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  }
 
-  const buttonStyle: React.CSSProperties = {
-    border: `1px solid ${C.goldDark}`,
-    borderRadius: 7,
-    padding: "12px 18px",
-    cursor: "pointer",
-    fontWeight: 800,
-    letterSpacing: 1.2,
-    transition: "all 180ms ease",
-  };
-
-  const panelStyle: React.CSSProperties = {
-    background:
-      "linear-gradient(145deg, #242424 0%, #171717 45%, #101010 100%)",
-    border: `1px solid ${C.goldDark}`,
-    borderRadius: 12,
-    boxShadow: "inset 0 1px 0 rgba(255,255,255,0.07)",
-  };
-
-  if (!supabase) {
+  if (loading) {
     return (
-      <main style={pageStyle}>
-        <h1>
-          ASK<span style={{ color: C.gold }}>XO</span>
-        </h1>
-        <p style={{ color: C.red }}>
-          Supabase environment variables are missing.
-          Check your Vercel project settings.
-        </p>
+      <main className="login-screen">
+        <div className="login-box">LOADING ASKXO...</div>
+        <style>{styles}</style>
       </main>
     );
   }
 
-  if (checkingLogin) {
-    return (
-      <main style={pageStyle}>
-        <div style={{ textAlign: "center", paddingTop: 100 }}>
-          <h1>
-            ASK<span style={{ color: C.gold }}>XO</span>
-          </h1>
-          <p style={{ color: C.muted }}>Checking secure login...</p>
-        </div>
-      </main>
-    );
-  }
-
+  // Login screen.
   if (!session) {
     return (
-      <main style={{
-        ...pageStyle,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}>
-        <section className="login-card">
-          <div className="brand-mark">
-            ASK<span>XO</span>
-          </div>
+      <main className="login-screen">
+        <style>{styles}</style>
 
-          <p className="eyebrow">PRIVATE STREAMER DASHBOARD</p>
+        <form className="login-box" onSubmit={handleLogin}>
+          <div className="login-logo">ASK<span>XO</span></div>
+          <p className="login-subtitle">PRIVATE ADMIN ACCESS</p>
 
-          <div className="gold-divider" />
+          <label>Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="Admin email"
+            required
+          />
 
-          <h2>STREAMER LOGIN</h2>
+          <label>Password</label>
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder="Password"
+            required
+          />
 
-          <form onSubmit={handleLogin}>
-            <label>EMAIL</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Your Supabase login email"
-              required
-            />
+          {loginError && (
+            <p className="error-message">{loginError}</p>
+          )}
 
-            <label>PASSWORD</label>
-            <input
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Your password"
-              required
-            />
-
-            {loginError && <p className="error-message">{loginError}</p>}
-
-            <button
-              type="submit"
-              disabled={loggingIn}
-              className="gold-button full-button"
-            >
-              {loggingIn ? "SIGNING IN..." : "ENTER DASHBOARD"}
-            </button>
-          </form>
-        </section>
-
-        <style jsx>{styles}</style>
+          <button
+            className="login-button"
+            type="submit"
+            disabled={loggingIn}
+          >
+            {loggingIn ? "SIGNING IN..." : "ENTER DASHBOARD"}
+          </button>
+        </form>
       </main>
     );
   }
 
   return (
-    <main style={pageStyle}>
-      <header className="top-header">
+    <main className="admin-page">
+      <style>{styles}</style>
+
+      <header className="dashboard-header">
         <div>
-          <h1 className="brand-mark">
-            ASK<span>XO</span>
-          </h1>
-          <p className="eyebrow">PRIVATE STREAMER DASHBOARD</p>
+          <div className="brand">ASK<span>XO</span></div>
+          <div className="header-subtitle">WEEKEND XO ADMIN</div>
         </div>
 
         <div className="header-controls">
-          <div className="sound-panel">
+          <div className="sound-controls">
             <button
               className="sound-toggle"
-              onClick={() => {
-                unlockAudio();
-                setMuted((current) => !current);
-              }}
+              onClick={() => setMuted(!muted)}
               title={muted ? "Unmute sounds" : "Mute sounds"}
             >
-              {muted ? "🔇" : "🔊"} {muted ? "MUTED" : "SOUND ON"}
+              {muted ? "🔇" : "🔊"}
             </button>
 
             <input
@@ -509,993 +401,916 @@ export default function AdminPage() {
               min="0"
               max="100"
               value={volume}
-              onChange={(e) => {
-                unlockAudio();
-                setVolume(Number(e.target.value));
-                if (Number(e.target.value) > 0) setMuted(false);
-              }}
+              onChange={(event) =>
+                setVolume(Number(event.target.value))
+              }
             />
 
-            <span>{volume}%</span>
+            <span className="volume-number">{volume}%</span>
           </div>
 
-          <button
-            onClick={handleLogout}
-            className="outline-button"
-          >
+          <button className="logout-button" onClick={handleLogout}>
             LOG OUT
           </button>
         </div>
       </header>
 
-      <section className="dashboard-content">
-        <div className="welcome-strip">
-          <span className="live-dot" />
-          STREAM CONTROL CENTER
-          <span className="welcome-line" />
-          <span className="welcome-small">ASKXO</span>
+      <section className="dashboard-heading">
+        <div>
+          <p className="eyebrow">THE CONTROL ROOM</p>
+          <h1>Submission <span>Desk</span></h1>
+          <p className="heading-description">
+            Review trades and lineup questions from the XO community.
+          </p>
         </div>
 
-        <div className="stats-grid">
-          <div className="stat-card">
-            <span className="stat-label">PENDING QUESTIONS</span>
-            <strong className="gold-number">{pending.length}</strong>
-            <span className="stat-foot">AWAITING REVIEW</span>
-          </div>
-
-          <div className="stat-card">
-            <span className="stat-label">COMPLETED QUESTIONS</span>
-            <strong className="silver-number">{history.length}</strong>
-            <span className="stat-foot">PROCESSED SUBMISSIONS</span>
-          </div>
-        </div>
-
-        <div className="queue-heading">
-          <div>
-            <h2>SUBMISSION QUEUE</h2>
-            <p>Review viewer questions and manage your live stream.</p>
-          </div>
-          <span className="queue-count">
-            {pending.length} WAITING
-          </span>
-        </div>
-
-        <div className="tabs-row">
-          <button
-            onClick={() => setView("pending")}
-            className={view === "pending" ? "tab active-tab" : "tab"}
-          >
-            PENDING <span>{pending.length}</span>
-          </button>
-
-          <button
-            onClick={() => setView("history")}
-            className={view === "history" ? "tab active-tab" : "tab"}
-          >
-            HISTORY <span>{history.length}</span>
-          </button>
-
-          <button
-            onClick={() => {
-              unlockAudio();
-              loadSubmissions();
-            }}
-            className="refresh-button"
-          >
-            ↻ REFRESH
-          </button>
-        </div>
-
-        {loading && (
-          <p className="loading-message">Loading submissions...</p>
-        )}
-
-        {loadError && (
-          <p className="error-message">{loadError}</p>
-        )}
-
-        {!loading && visibleItems.length === 0 && (
-          <div className="empty-state">
-            <div className="empty-symbol">XO</div>
-            <h3>
-              {view === "pending"
-                ? "THE TABLE IS CLEAR"
-                : "NO HISTORY YET"}
-            </h3>
-            <p>
-              {view === "pending"
-                ? "Waiting for the next question to come in..."
-                : "Completed submissions will appear here."}
-            </p>
-          </div>
-        )}
-
-        <div className="submission-list">
-          {visibleItems.map((item) => (
-            <article
-              key={item.id}
-              className={[
-                "submission-card",
-                item.id === newSubmissionId ? "new-arrival" : "",
-                item.id === exitingId ? "exit-card" : "",
-              ].join(" ")}
-              style={{
-                borderColor:
-                  item.status === "pending" ? C.goldDark : "#494949",
-              }}
-            >
-              <div className="submission-top">
-                <div>
-                  <span className="viewer-label">VIEWER SUBMISSION</span>
-                  <h3 className="username">
-                    @{item.tiktok_username}
-                  </h3>
-                  <p className="submission-date">
-                    {new Date(item.created_at).toLocaleString()}
-                  </p>
-                </div>
-
-                <span className={`status status-${item.status}`}>
-                  {item.status.toUpperCase()}
-                </span>
-              </div>
-
-              <div className="card-divider" />
-
-              <div className="question-heading">
-                <span>
-                  {item.submission_type === "trade"
-                    ? "TRADE QUESTION"
-                    : "START / SIT QUESTION"}
-                </span>
-                <span className="question-type">
-                  {item.submission_type === "trade"
-                    ? "PLAYER EXCHANGE"
-                    : "PLAYER COMPARISON"}
-                </span>
-              </div>
-
-              {item.submission_type === "trade" ? (
-                <div className="trade-grid">
-                  <div className="trade-side">
-                    <div className="side-heading">
-                      <span className="side-icon">−</span>
-                      THEY GIVE
-                    </div>
-
-                    {item.give_players?.length ? (
-                      item.give_players.map((player, index) => (
-                        <PlayerBar
-                          key={player.id || index}
-                          player={player}
-                        />
-                      ))
-                    ) : (
-                      <p className="no-players">No players listed</p>
-                    )}
-                  </div>
-
-                  <div className="trade-middle">
-                    <span>XO</span>
-                    <small>TRADE</small>
-                  </div>
-
-                  <div className="trade-side">
-                    <div className="side-heading">
-                      <span className="side-icon">+</span>
-                      THEY GET
-                    </div>
-
-                    {item.get_players?.length ? (
-                      item.get_players.map((player, index) => (
-                        <PlayerBar
-                          key={player.id || index}
-                          player={player}
-                        />
-                      ))
-                    ) : (
-                      <p className="no-players">No players listed</p>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="start-sit-panel">
-                  <div className="side-heading">
-                    PLAYERS TO COMPARE
-                  </div>
-
-                  {item.players?.map((player, index) => (
-                    <PlayerBar
-                      key={player.id || index}
-                      player={player}
-                    />
-                  ))}
-                </div>
-              )}
-
-              {item.status === "pending" && (
-                <div className="action-row">
-                  <button
-                    disabled={processingId === item.id}
-                    onClick={() => processSubmission(item, "accepted")}
-                    className="gold-button action-button"
-                  >
-                    {processingId === item.id ? "..." : "✓ ACCEPT"}
-                  </button>
-
-                  <button
-                    disabled={processingId === item.id}
-                    onClick={() => processSubmission(item, "declined")}
-                    className="decline-button action-button"
-                  >
-                    {processingId === item.id ? "..." : "✕ DECLINE"}
-                  </button>
-                </div>
-              )}
-
-              {item.status !== "pending" && item.processed_at && (
-                <p className="processed-date">
-                  PROCESSED {new Date(item.processed_at).toLocaleString()}
-                </p>
-              )}
-            </article>
-          ))}
-        </div>
+        <button
+          className="refresh-button"
+          onClick={() => void loadSubmissions()}
+        >
+          ↻ REFRESH
+        </button>
       </section>
 
-      <footer className="footer">
-        <div className="footer-rule" />
-        ASKXO <span>·</span> PRIVATE STREAMER CONTROL
-        <div className="footer-rule" />
-      </footer>
+      {error && <div className="error-banner">{error}</div>}
 
-      <style jsx>{styles}</style>
+      <nav className="tabs">
+        <button
+          className={activeTab === "pending" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("pending")}
+        >
+          PENDING
+        </button>
+
+        <button
+          className={activeTab === "history" ? "tab active" : "tab"}
+          onClick={() => setActiveTab("history")}
+        >
+          HISTORY
+        </button>
+      </nav>
+
+      <section className="poker-table">
+        {displayedSubmissions.length === 0 ? (
+          <div className="empty-state">
+            <div className="empty-xo">XO</div>
+            <h2>
+              {activeTab === "pending"
+                ? "No pending submissions"
+                : "No completed submissions yet"}
+            </h2>
+            <p>
+              {activeTab === "pending"
+                ? "New questions will appear here when viewers submit them."
+                : "Accepted and declined submissions will be saved here."}
+            </p>
+          </div>
+        ) : (
+          <div className="submission-list">
+            {displayedSubmissions.map((item) => (
+              <article
+                key={item.id}
+                className={[
+                  "submission-card",
+                  exitingId === item.id ? "card-exiting" : "",
+                  incomingId === item.id ? "card-incoming" : "",
+                ].join(" ")}
+              >
+                <div className="playing-card-corner corner-top">
+                  <strong>{item.submission_number ?? "—"}</strong>
+                  <span>♠</span>
+                </div>
+
+                <div className="playing-card-corner corner-bottom">
+                  <strong>{item.submission_number ?? "—"}</strong>
+                  <span>♠</span>
+                </div>
+
+                <div className="submission-top">
+                  <div className="viewer-info">
+                    <span className="viewer-label">SUBMITTED BY</span>
+                    <h2 className="username">
+                      @{item.tiktok_username}
+                    </h2>
+                    <span className="submission-date">
+                      {formatDate(item.created_at)}
+                    </span>
+                  </div>
+
+                  <span className={`status-badge status-${item.status}`}>
+                    {item.status.toUpperCase()}
+                  </span>
+                </div>
+
+                <div className="card-brand-line">
+                  <span>ASKXO</span>
+                  <span>SUBMISSION #{item.submission_number ?? "—"}</span>
+                </div>
+
+                <div className="card-divider" />
+
+                {item.submission_type === "trade" ? (
+                  <>
+                    <div className="question-title">
+                      <span className="question-type">TRADE QUESTION</span>
+                      <h3>Should this trade happen?</h3>
+                    </div>
+
+                    <div className="trade-grid">
+                      <div className="trade-side">
+                        <h4 className="side-heading">THEY GIVE</h4>
+
+                        {item.give_players?.length ? (
+                          item.give_players.map((player, index) => (
+                            <PlayerBar
+                              key={`${player.id || player.name}-${index}`}
+                              player={player}
+                            />
+                          ))
+                        ) : (
+                          <p className="no-players">No players listed</p>
+                        )}
+                      </div>
+
+                      <div className="trade-middle">⇄</div>
+
+                      <div className="trade-side">
+                        <h4 className="side-heading">THEY GET</h4>
+
+                        {item.get_players?.length ? (
+                          item.get_players.map((player, index) => (
+                            <PlayerBar
+                              key={`${player.id || player.name}-${index}`}
+                              player={player}
+                            />
+                          ))
+                        ) : (
+                          <p className="no-players">No players listed</p>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="question-title">
+                      <span className="question-type">START / SIT QUESTION</span>
+                      <h3>Who should they start?</h3>
+                    </div>
+
+                    <div className="start-sit-panel">
+                      {item.players?.length ? (
+                        item.players.map((player, index) => (
+                          <PlayerBar
+                            key={`${player.id || player.name}-${index}`}
+                            player={player}
+                          />
+                        ))
+                      ) : (
+                        <p className="no-players">
+                          No players listed
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                {item.status === "pending" ? (
+                  <div className="action-buttons">
+                    <button
+                      className="decline-button"
+                      disabled={processingId !== null}
+                      onClick={() =>
+                        void processSubmission(item, "declined")
+                      }
+                    >
+                      DECLINE
+                    </button>
+
+                    <button
+                      className="accept-button"
+                      disabled={processingId !== null}
+                      onClick={() =>
+                        void processSubmission(item, "accepted")
+                      }
+                    >
+                      ACCEPT
+                    </button>
+                  </div>
+                ) : (
+                  <div className="completed-label">
+                    {item.status === "accepted"
+                      ? "✓ ACCEPTED"
+                      : "✕ DECLINED"}
+                    {item.processed_at &&
+                      ` · ${formatDate(item.processed_at)}`}
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <footer className="dashboard-footer">
+        WEEKEND XO <span>·</span> ASKXO ADMIN
+      </footer>
     </main>
   );
 }
 
+function PlayerBar({ player }: { player: Player }) {
+  return (
+    <div className="player-bar">
+      {player.imageUrl ? (
+        <img
+          className="player-image"
+          src={player.imageUrl}
+          alt={player.name}
+        />
+      ) : (
+        <div className="player-placeholder">XO</div>
+      )}
+
+      <div className="player-details">
+        <strong>{player.name}</strong>
+        <span>
+          {[player.position, player.team].filter(Boolean).join(" · ") ||
+            "PLAYER"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 const styles = `
-  * {
-    box-sizing: border-box;
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #080a09;
+  color: #f5f1e8;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+button, input {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse at center, #18241d 0%, #080a09 70%);
+}
+
+.login-box {
+  width: 100%;
+  max-width: 410px;
+  padding: 42px 34px;
+  border: 1px solid #b99b65;
+  border-radius: 18px;
+  background: linear-gradient(145deg, #191b19, #0d0f0e);
+  box-shadow: 0 20px 70px rgba(0,0,0,.5);
+}
+
+.login-logo, .brand {
+  font-family: Georgia, serif;
+  font-size: 38px;
+  font-weight: 900;
+  letter-spacing: 5px;
+  color: #f5f1e8;
+}
+
+.login-logo span, .brand span {
+  color: #c9ad78;
+}
+
+.login-subtitle {
+  margin: 8px 0 32px;
+  color: #c9ad78;
+  font-size: 10px;
+  letter-spacing: 3px;
+}
+
+.login-box label {
+  display: block;
+  margin: 18px 0 8px;
+  color: #d3c4a6;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+
+.login-box input {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid #514632;
+  border-radius: 8px;
+  outline: none;
+  background: #090b0a;
+  color: white;
+}
+
+.login-box input:focus {
+  border-color: #c9ad78;
+}
+
+.login-button {
+  width: 100%;
+  margin-top: 25px;
+  padding: 15px;
+  border: 1px solid #e0c894;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #e0c894, #a98a53);
+  color: #15140f;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+}
+
+.login-button:disabled {
+  opacity: .6;
+}
+
+.error-message {
+  color: #ff9999;
+  font-size: 13px;
+}
+
+.admin-page {
+  min-height: 100vh;
+  padding: 30px 5%;
+  background:
+    radial-gradient(ellipse at 50% 0%, #1c241f 0%, #0b0e0c 48%, #080a09 100%);
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid rgba(201,173,120,.28);
+}
+
+.brand {
+  font-size: 31px;
+}
+
+.header-subtitle {
+  margin-top: 5px;
+  color: #b99b65;
+  font-size: 9px;
+  letter-spacing: 3px;
+}
+
+.header-controls {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.sound-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid #4b4639;
+  border-radius: 30px;
+  background: #141714;
+}
+
+.sound-toggle {
+  border: 0;
+  background: transparent;
+  color: white;
+  font-size: 18px;
+}
+
+.sound-controls input {
+  width: 90px;
+  accent-color: #c9ad78;
+}
+
+.volume-number {
+  min-width: 34px;
+  color: #d9c9a8;
+  font-size: 10px;
+}
+
+.logout-button, .refresh-button {
+  padding: 10px 15px;
+  border: 1px solid #9c8050;
+  border-radius: 7px;
+  background: transparent;
+  color: #d9c9a8;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+
+.dashboard-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 42px 0 30px;
+}
+
+.eyebrow {
+  margin: 0 0 9px;
+  color: #c9ad78;
+  font-size: 10px;
+  letter-spacing: 3px;
+}
+
+.dashboard-heading h1 {
+  margin: 0;
+  font-family: Georgia, serif;
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 500;
+}
+
+.dashboard-heading h1 span {
+  color: #c9ad78;
+}
+
+.heading-description {
+  color: #a7a79f;
+  font-size: 13px;
+}
+
+.tabs {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.tab {
+  padding: 12px 25px;
+  border: 1px solid #62543b;
+  border-radius: 7px;
+  background: #141714;
+  color: #c5b99f;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+}
+
+.tab.active {
+  border-color: #d0b47b;
+  background: linear-gradient(135deg, #d8c18f, #a78a53);
+  color: #17150f;
+}
+
+.poker-table {
+  min-height: 260px;
+  padding: clamp(14px, 3vw, 34px);
+  border: 5px double #b99b65;
+  border-radius: 22px;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(255,255,255,.018) 0px,
+      rgba(255,255,255,.018) 2px,
+      transparent 2px,
+      transparent 5px
+    ),
+    radial-gradient(ellipse at center, #18543b, #0b3425 78%);
+  box-shadow:
+    inset 0 0 0 4px rgba(201,173,120,.12),
+    inset 0 0 65px rgba(0,0,0,.45),
+    0 15px 45px rgba(0,0,0,.35);
+}
+
+.submission-list {
+  display: grid;
+  gap: 26px;
+  max-width: 1050px;
+  margin: 0 auto;
+}
+
+.submission-card {
+  position: relative;
+  overflow: hidden;
+  padding: 28px 30px 48px;
+  border: 2px solid #c9ad78;
+  border-radius: 16px;
+  background: linear-gradient(145deg, #f6f1e5, #e8dfcc);
+  color: #17251e;
+  box-shadow:
+    0 12px 32px rgba(0,0,0,.35),
+    inset 0 0 0 3px rgba(255,255,255,.45);
+  transition: opacity .35s ease, transform .35s ease, box-shadow .35s ease;
+}
+
+.card-exiting {
+  opacity: 0;
+  transform: translateX(55px) scale(.97);
+}
+
+.card-incoming {
+  animation: incomingGlow 1.5s ease;
+}
+
+@keyframes incomingGlow {
+  0% {
+    box-shadow: 0 0 0 rgba(220,190,125,0);
+  }
+  35% {
+    box-shadow: 0 0 35px rgba(220,190,125,.8);
+  }
+  100% {
+    box-shadow: 0 12px 32px rgba(0,0,0,.35);
+  }
+}
+
+.playing-card-corner {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1;
+  color: #183d2d;
+  font-family: Georgia, serif;
+}
+
+.playing-card-corner strong {
+  font-size: 25px;
+  font-weight: 900;
+}
+
+.playing-card-corner span {
+  margin-top: 3px;
+  color: #b08c51;
+  font-size: 20px;
+}
+
+.corner-top {
+  top: 13px;
+  left: 17px;
+}
+
+.corner-bottom {
+  right: 17px;
+  bottom: 12px;
+  transform: rotate(180deg);
+}
+
+.submission-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 15px;
+  padding-left: 48px;
+}
+
+.viewer-label {
+  color: #826a43;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 2px;
+}
+
+.username {
+  margin: 5px 0;
+  color: #183d2d;
+  font-size: 20px;
+}
+
+.submission-date {
+  color: #746e61;
+  font-size: 11px;
+}
+
+.status-badge {
+  padding: 8px 12px;
+  border: 1px solid currentColor;
+  border-radius: 20px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 1px;
+}
+
+.status-pending {
+  color: #896a32;
+}
+
+.status-accepted {
+  color: #28633e;
+}
+
+.status-declined {
+  color: #9c4141;
+}
+
+.card-brand-line {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 25px;
+  color: #8b744c;
+  font-family: Georgia, serif;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 2px;
+}
+
+.card-divider {
+  height: 1px;
+  margin: 12px 0 22px;
+  background: linear-gradient(90deg, transparent, #b99b65, transparent);
+}
+
+.question-title {
+  margin-bottom: 17px;
+}
+
+.question-type {
+  color: #766d5e;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: 2px;
+}
+
+.question-title h3 {
+  margin: 6px 0 0;
+  color: #183d2d;
+  font-family: Georgia, serif;
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.trade-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: stretch;
+  gap: 14px;
+  padding: 16px;
+  border: 3px solid #c9ad78;
+  border-radius: 15px;
+  background:
+    repeating-linear-gradient(
+      45deg,
+      rgba(255,255,255,.018) 0px,
+      rgba(255,255,255,.018) 2px,
+      transparent 2px,
+      transparent 5px
+    ),
+    radial-gradient(ellipse at center, #18543b, #0b3425 75%);
+  box-shadow: inset 0 0 35px rgba(0,0,0,.4);
+}
+
+.trade-side {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid #b89b67;
+  border-radius: 10px;
+  background: rgba(5,28,20,.72);
+}
+
+.side-heading {
+  margin: 0 0 12px;
+  color: #e6d2a6;
+  font-size: 10px;
+  letter-spacing: 2px;
+}
+
+.trade-middle {
+  display: flex;
+  align-items: center;
+  color: #e6d2a6;
+  font-size: 25px;
+}
+
+.player-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin-bottom: 9px;
+  padding: 8px;
+  border: 1px solid #55564e;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #292d2a, #111412);
+  color: white;
+}
+
+.player-bar:last-child {
+  margin-bottom: 0;
+}
+
+.player-image, .player-placeholder {
+  flex: 0 0 42px;
+  width: 42px;
+  height: 42px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #333a34;
+}
+
+.player-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #d6c18f;
+  font-family: Georgia, serif;
+  font-weight: 900;
+}
+
+.player-details {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.player-details strong {
+  overflow: hidden;
+  color: #fff;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-details span {
+  color: #c9ad78;
+  font-size: 9px;
+  letter-spacing: 1px;
+}
+
+.no-players {
+  color: #ded6c5;
+  font-size: 12px;
+}
+
+.start-sit-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 15px;
+  border: 2px solid #c9ad78;
+  border-radius: 12px;
+  background: radial-gradient(ellipse at center, #18543b, #0b3425);
+}
+
+.start-sit-panel .player-bar {
+  margin: 0;
+}
+
+.action-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.accept-button, .decline-button {
+  min-width: 130px;
+  padding: 13px 22px;
+  border-radius: 7px;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.accept-button:hover, .decline-button:hover {
+  transform: translateY(-2px);
+}
+
+.accept-button {
+  border: 1px solid #e4cc98;
+  background: linear-gradient(135deg, #e0c894, #aa8950);
+  color: #17150f;
+  box-shadow: 0 4px 15px rgba(169,137,80,.2);
+}
+
+.decline-button {
+  border: 1px solid #b99b65;
+  background: linear-gradient(135deg, #252825, #101210);
+  color: #e6d2a6;
+}
+
+.accept-button:disabled, .decline-button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.completed-label {
+  margin-top: 20px;
+  color: #66563b;
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  text-align: right;
+}
+
+.empty-state {
+  padding: 55px 20px;
+  text-align: center;
+}
+
+.empty-xo {
+  color: #d5bd8b;
+  font-family: Georgia, serif;
+  font-size: 50px;
+  letter-spacing: 7px;
+}
+
+.empty-state h2 {
+  color: #f1e8d4;
+  font-family: Georgia, serif;
+  font-weight: 500;
+}
+
+.empty-state p {
+  color: #b8c2b9;
+  font-size: 13px;
+}
+
+.error-banner {
+  margin: 15px 0;
+  padding: 12px;
+  border: 1px solid #a34b4b;
+  border-radius: 7px;
+  background: rgba(130,35,35,.2);
+  color: #ffc1c1;
+  font-size: 12px;
+}
+
+.dashboard-footer {
+  padding: 25px 0 5px;
+  color: #8f8c7e;
+  font-size: 9px;
+  letter-spacing: 3px;
+  text-align: center;
+}
+
+.dashboard-footer span {
+  color: #c9ad78;
+}
+
+@media (max-width: 700px) {
+  .admin-page {
+    padding: 20px 14px;
   }
 
-  .top-header {
-    max-width: 1100px;
-    margin: 0 auto 34px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 20px;
-    flex-wrap: wrap;
-    border-bottom: 1px solid rgba(201,173,120,0.35);
-    padding-bottom: 22px;
-  }
-
-  .brand-mark {
-    font-size: 42px;
-    font-weight: 950;
-    letter-spacing: -2px;
-    margin: 0;
-    color: #f5f5f5;
-    text-shadow: 0 2px 14px rgba(255,255,255,0.08);
-  }
-
-  .brand-mark span {
-    color: #c9ad78;
-  }
-
-  .eyebrow {
-    color: #a99a7d;
-    font-size: 10px;
-    letter-spacing: 3px;
-    margin: 5px 0 0;
+  .dashboard-header {
+    align-items: flex-start;
   }
 
   .header-controls {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .sound-panel {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: #171717;
-    border: 1px solid #66573d;
-    border-radius: 8px;
-    padding: 9px 12px;
-    color: #c9ad78;
-    font-size: 10px;
-    letter-spacing: 1px;
-  }
-
-  .sound-toggle {
-    background: transparent;
-    border: none;
-    color: #e2d2ad;
-    font-size: 10px;
-    font-weight: 800;
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .sound-panel input {
-    width: 75px;
-    accent-color: #c9ad78;
-    cursor: pointer;
-  }
-
-  .sound-panel span {
-    min-width: 30px;
-    text-align: right;
-  }
-
-  .outline-button {
-    border: 1px solid #a58b5e;
-    background: linear-gradient(145deg, #262626, #111);
-    color: #e3d4b5;
-    padding: 12px 16px;
-    border-radius: 7px;
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 1px;
-    cursor: pointer;
-  }
-
-  .dashboard-content {
-    max-width: 1100px;
-    margin: 0 auto;
-  }
-
-  .welcome-strip {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    color: #c9ad78;
-    font-size: 10px;
-    letter-spacing: 2px;
-    margin-bottom: 20px;
-  }
-
-  .live-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #c9ad78;
-    box-shadow: 0 0 9px #c9ad78;
-  }
-
-  .welcome-line {
-    height: 1px;
-    background: linear-gradient(90deg, #8e754b, transparent);
-    flex: 1;
-  }
-
-  .welcome-small {
-    color: #777;
-    font-size: 9px;
-  }
-
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 14px;
-    margin-bottom: 35px;
-  }
-
-  .stat-card {
-    background:
-      linear-gradient(135deg, #282828, #171717 55%, #101010);
-    border: 1px solid #756143;
-    border-radius: 10px;
-    padding: 20px;
-    display: flex;
     flex-direction: column;
-    min-height: 130px;
-    box-shadow: inset 0 1px rgba(255,255,255,0.08);
-  }
-
-  .stat-label {
-    color: #b5b5b5;
-    font-size: 10px;
-    letter-spacing: 1.5px;
-  }
-
-  .gold-number, .silver-number {
-    font-size: 38px;
-    line-height: 1.2;
-    margin-top: 8px;
-  }
-
-  .gold-number {
-    color: #d9c397;
-    text-shadow: 0 0 15px rgba(201,173,120,0.18);
-  }
-
-  .silver-number {
-    color: #e0e0e0;
-  }
-
-  .stat-foot {
-    color: #777;
-    font-size: 9px;
-    letter-spacing: 1.4px;
-    margin-top: 7px;
-  }
-
-  .queue-heading {
-    display: flex;
-    justify-content: space-between;
     align-items: flex-end;
-    gap: 12px;
-    margin-bottom: 20px;
+    gap: 10px;
   }
 
-  .queue-heading h2 {
-    font-size: 18px;
-    letter-spacing: 2px;
-    margin: 0;
-    color: #eee;
+  .sound-controls input {
+    width: 65px;
   }
 
-  .queue-heading p {
-    color: #888;
-    font-size: 12px;
-    margin: 7px 0 0;
-  }
-
-  .queue-count {
-    color: #d9c397;
-    border: 1px solid #806b47;
-    border-radius: 30px;
-    padding: 7px 12px;
-    font-size: 10px;
-    letter-spacing: 1px;
-    white-space: nowrap;
-  }
-
-  .tabs-row {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    border-bottom: 1px solid #45403a;
-    padding-bottom: 13px;
-    margin-bottom: 22px;
-    flex-wrap: wrap;
-  }
-
-  .tab, .refresh-button {
-    border: 1px solid #454545;
-    background: #171717;
-    color: #aaa;
-    padding: 11px 15px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 1px;
-    cursor: pointer;
-  }
-
-  .tab span {
-    margin-left: 7px;
-    color: #d8c49c;
-  }
-
-  .active-tab {
-    background: linear-gradient(145deg, #d9c397, #a98c5a);
-    color: #17130c;
-    border-color: #e3d0a5;
-    box-shadow: 0 0 13px rgba(201,173,120,0.13);
-  }
-
-  .active-tab span {
-    color: #17130c;
+  .dashboard-heading {
+    align-items: flex-start;
   }
 
   .refresh-button {
-    margin-left: auto;
-    color: #d9c397;
-    border-color: #806b47;
-  }
-
-  .submission-list {
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
+    margin-top: 20px;
   }
 
   .submission-card {
-    position: relative;
-    overflow: hidden;
-    padding: 21px;
-    border: 1px solid #806b47;
-    border-radius: 11px;
-    background:
-      linear-gradient(145deg, #252525 0%, #191919 38%, #111 100%);
-    box-shadow:
-      inset 0 1px rgba(255,255,255,0.07),
-      0 10px 28px rgba(0,0,0,0.25);
-    animation: card-enter 450ms cubic-bezier(.2,.8,.2,1) both;
-  }
-
-  .submission-card.new-arrival {
-    animation:
-      card-enter 450ms cubic-bezier(.2,.8,.2,1) both,
-      gold-arrival 1.7s ease-in-out 1;
-  }
-
-  .submission-card.exit-card {
-    animation: card-exit 350ms ease-in forwards;
-    pointer-events: none;
-  }
-
-  .submission-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-  }
-
-  .viewer-label {
-    font-size: 9px;
-    color: #9c8965;
-    letter-spacing: 2px;
-  }
-
-  .username {
-    font-size: 22px;
-    margin: 5px 0;
-    color: #e1cda3;
-    letter-spacing: 0.3px;
-  }
-
-  .submission-date {
-    font-size: 11px;
-    color: #858585;
-    margin: 0;
-  }
-
-  .status {
-    border: 1px solid currentColor;
-    border-radius: 30px;
-    padding: 7px 12px;
-    font-size: 9px;
-    letter-spacing: 1px;
-    font-weight: 900;
-  }
-
-  .status-pending {
-    color: #d9c397;
-  }
-
-  .status-accepted {
-    color: #78bd91;
-  }
-
-  .status-declined {
-    color: #d58b8b;
-  }
-
-  .card-divider {
-    height: 1px;
-    background: linear-gradient(90deg, #a68c5c, #484848, transparent);
-    margin: 17px 0;
-  }
-
-  .question-heading {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-    margin-bottom: 13px;
-    font-size: 12px;
-    font-weight: 900;
-    letter-spacing: 1.8px;
-    color: #e1d3b7;
-  }
-
-  .question-type {
-    font-size: 9px;
-    color: #777;
-    letter-spacing: 1px;
-    font-weight: 500;
+    padding: 23px 15px 45px;
   }
 
   .trade-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 48px minmax(0, 1fr);
-    gap: 12px;
-    align-items: stretch;
-  }
-
-  .trade-side, .start-sit-panel {
-    min-width: 0;
-    padding: 13px;
-    border: 1px solid #796748;
-    border-radius: 8px;
-    background:
-      linear-gradient(145deg, #262626, #171717 65%, #121212);
-    box-shadow: inset 0 1px rgba(255,255,255,0.07);
-  }
-
-  .side-heading {
-    color: #d9c397;
-    font-size: 11px;
-    font-weight: 900;
-    letter-spacing: 1.8px;
-    margin-bottom: 12px;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .side-icon {
-    width: 19px;
-    height: 19px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    background: #d9c397;
-    color: #171717;
-    font-size: 14px;
+    grid-template-columns: 1fr;
   }
 
   .trade-middle {
-    display: flex;
-    flex-direction: column;
     justify-content: center;
-    align-items: center;
-    color: #c9ad78;
-    opacity: 0.8;
-  }
-
-  .trade-middle span {
-    font-size: 19px;
-    font-weight: 900;
-    letter-spacing: -1px;
-  }
-
-  .trade-middle small {
-    font-size: 8px;
-    letter-spacing: 2px;
-    margin-top: 3px;
-  }
-
-  .player-bar {
-    display: flex;
-    align-items: center;
-    gap: 11px;
-    background:
-      linear-gradient(110deg, #353535, #242424 55%, #1b1b1b);
-    border: 1px solid #55504a;
-    border-radius: 7px;
-    padding: 9px;
-    margin-bottom: 8px;
-    min-width: 0;
-    box-shadow: inset 0 1px rgba(255,255,255,0.05);
-  }
-
-  .player-bar:last-child {
-    margin-bottom: 0;
-  }
-
-  .player-bar img {
-    width: 46px;
-    height: 46px;
-    border-radius: 50%;
-    object-fit: cover;
-    background: #454545;
-    border: 1px solid #b69c6b;
-    flex-shrink: 0;
-  }
-
-  .player-info {
-    min-width: 0;
-  }
-
-  .player-info strong {
-    display: block;
-    color: #f1f1f1;
-    font-size: 13px;
-    overflow-wrap: anywhere;
-  }
-
-  .player-info span {
-    display: block;
-    color: #aaa;
-    font-size: 11px;
-    margin-top: 4px;
-  }
-
-  .no-players {
-    color: #888;
-    font-size: 11px;
+    transform: rotate(90deg);
   }
 
   .start-sit-panel {
-    max-width: 650px;
+    grid-template-columns: 1fr;
   }
 
-  .action-row {
-    display: flex;
-    gap: 12px;
-    margin-top: 19px;
+  .action-buttons {
+    gap: 8px;
   }
 
-  .action-button {
+  .accept-button, .decline-button {
+    min-width: 0;
     flex: 1;
-    min-height: 47px;
-    border-radius: 7px;
-    font-size: 11px;
-    font-weight: 900;
-    letter-spacing: 1.5px;
-    cursor: pointer;
-    transition: transform 180ms ease, box-shadow 180ms ease;
+    padding: 13px 8px;
   }
-
-  .action-button:hover:not(:disabled) {
-    transform: translateY(-2px);
-  }
-
-  .action-button:disabled {
-    opacity: 0.55;
-    cursor: wait;
-  }
-
-  .gold-button {
-    background: linear-gradient(135deg, #ead8b0, #c9ad78 55%, #a58a5d);
-    border: 1px solid #f1dfb7;
-    color: #17130c;
-    font-weight: 900;
-    letter-spacing: 1.3px;
-    border-radius: 7px;
-    cursor: pointer;
-    box-shadow: inset 0 1px rgba(255,255,255,0.55);
-  }
-
-  .gold-button:hover:not(:disabled) {
-    box-shadow: 0 0 17px rgba(201,173,120,0.24);
-  }
-
-  .decline-button {
-    background: linear-gradient(145deg, #292929, #101010);
-    border: 1px solid #b79b6a;
-    color: #e3d4b5;
-    font-weight: 900;
-    letter-spacing: 1.3px;
-    border-radius: 7px;
-    cursor: pointer;
-  }
-
-  .decline-button:hover:not(:disabled) {
-    background: #34302a;
-    box-shadow: 0 0 14px rgba(201,173,120,0.12);
-  }
-
-  .full-button {
-    width: 100%;
-    padding: 14px;
-    margin-top: 10px;
-  }
-
-  .processed-date {
-    color: #888;
-    font-size: 9px;
-    letter-spacing: 1px;
-    margin: 17px 0 0;
-  }
-
-  .empty-state {
-    text-align: center;
-    padding: 55px 20px;
-    background: linear-gradient(145deg, #222, #111);
-    border: 1px solid #756143;
-    border-radius: 10px;
-  }
-
-  .empty-symbol {
-    color: #c9ad78;
-    font-size: 36px;
-    font-weight: 900;
-    letter-spacing: -3px;
-    opacity: 0.7;
-  }
-
-  .empty-state h3 {
-    color: #ded0b2;
-    font-size: 13px;
-    letter-spacing: 2px;
-  }
-
-  .empty-state p, .loading-message {
-    color: #888;
-    font-size: 12px;
-  }
-
-  .login-card {
-    width: 100%;
-    max-width: 420px;
-    padding: 32px;
-    border: 1px solid #a58b5e;
-    border-radius: 12px;
-    background: linear-gradient(145deg, #292929, #151515 55%, #101010);
-    box-shadow:
-      0 20px 70px rgba(0,0,0,0.6),
-      inset 0 1px rgba(255,255,255,0.1);
-  }
-
-  .login-card .brand-mark {
-    text-align: center;
-    font-size: 48px;
-  }
-
-  .login-card .eyebrow {
-    text-align: center;
-    margin: 8px 0 20px;
-  }
-
-  .gold-divider {
-    height: 1px;
-    background: linear-gradient(90deg, transparent, #c9ad78, transparent);
-    margin-bottom: 26px;
-  }
-
-  .login-card h2 {
-    text-align: center;
-    font-size: 15px;
-    letter-spacing: 2px;
-    color: #e3d4b5;
-    margin-bottom: 25px;
-  }
-
-  .login-card label {
-    display: block;
-    color: #c9ad78;
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 1.5px;
-    margin: 17px 0 8px;
-  }
-
-  .login-card input {
-    width: 100%;
-    padding: 14px;
-    border-radius: 6px;
-    border: 1px solid #555;
-    background: #101010;
-    color: #fff;
-    outline: none;
-  }
-
-  .login-card input:focus {
-    border-color: #c9ad78;
-    box-shadow: 0 0 8px rgba(201,173,120,0.15);
-  }
-
-  .error-message {
-    color: #e39b9b;
-    font-size: 12px;
-  }
-
-  .footer {
-    max-width: 1100px;
-    margin: 50px auto 0;
-    display: flex;
-    align-items: center;
-    gap: 15px;
-    justify-content: center;
-    color: #777;
-    font-size: 9px;
-    letter-spacing: 2px;
-  }
-
-  .footer span {
-    color: #c9ad78;
-  }
-
-  .footer-rule {
-    height: 1px;
-    width: 50px;
-    background: linear-gradient(90deg, transparent, #806b47);
-  }
-
-  @keyframes card-enter {
-    from {
-      opacity: 0;
-      transform: translateX(28px);
-    }
-    to {
-      opacity: 1;
-      transform: translateX(0);
-    }
-  }
-
-  @keyframes card-exit {
-    from {
-      opacity: 1;
-      transform: translateX(0) scale(1);
-    }
-    to {
-      opacity: 0;
-      transform: translateX(-45px) scale(0.97);
-    }
-  }
-
-  @keyframes gold-arrival {
-    0%, 100% {
-      box-shadow:
-        inset 0 1px rgba(255,255,255,0.07),
-        0 10px 28px rgba(0,0,0,0.25);
-    }
-    35% {
-      box-shadow:
-        0 0 25px rgba(201,173,120,0.36),
-        inset 0 0 20px rgba(201,173,120,0.08);
-    }
-  }
-
-  @media (max-width: 650px) {
-    .stats-grid {
-      grid-template-columns: 1fr 1fr;
-    }
-
-    .trade-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .trade-middle {
-      flex-direction: row;
-      gap: 7px;
-      padding: 2px;
-    }
-
-    .trade-middle small {
-      margin-top: 0;
-    }
-
-    .top-header {
-      align-items: flex-start;
-    }
-
-    .header-controls {
-      width: 100%;
-      justify-content: space-between;
-    }
-
-    .sound-panel {
-      flex-wrap: wrap;
-    }
-
-    .submission-card {
-      padding: 14px;
-    }
-
-    .queue-heading {
-      align-items: flex-start;
-      flex-direction: column;
-    }
-
-    .action-row {
-      gap: 8px;
-    }
-
-    .action-button {
-      padding: 12px 5px;
-      font-size: 10px;
-    }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .submission-card,
-    .submission-card.new-arrival,
-    .submission-card.exit-card {
-      animation: none;
-    }
-  }
+}
 `;
