@@ -216,13 +216,13 @@ export default function AdminPage() {
       }
 
       if (type === "accepted") {
-        // Cash-register CHA-CHING!
-        tone(1318, 0, 0.38, "sine", 1760);
-        tone(1976, 0.09, 0.48, "triangle", 2637);
-        tone(988, 0.20, 0.38, "sine", 1318);
-        tone(1568, 0.34, 0.55, "sine", 2093);
-        tone(392, 0.05, 0.16, "triangle");
-      }
+  // Cash-register CHA-CHING!
+  tone(1318, 0, 0.38, "sine", 1760);
+  tone(1976, 0.09, 0.48, "triangle", 2637);
+  tone(988, 0.20, 0.38, "sine", 1318);
+  tone(1568, 0.34, 0.55, "sine", 2093);
+  tone(392, 0.05, 0.16, "triangle");
+}
 
       if (type === "declined") {
         tone(440, 0, 0.25, "triangle");
