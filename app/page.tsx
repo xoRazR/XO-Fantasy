@@ -192,6 +192,7 @@ export default function Home() {
   const [step, setStep] = useState(1);
   const [tiktok, setTiktok] = useState("");
   const [type, setType] = useState<QuestionType | null>(null);
+  const [comments, setComments] = useState("");
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [loadingPlayers, setLoadingPlayers] = useState(true);
@@ -323,15 +324,18 @@ export default function Home() {
         .map(id => players.find(p => p.id === id))
         .filter((p): p is Player => Boolean(p));
 
-      if (givePlayers.length !== send.length || getPlayers.length !== receive.length) {
+      if (
+        givePlayers.length !== send.length ||
+        getPlayers.length !== receive.length
+      ) {
         alert("One of the selected players could not be found. Please select them again.");
         return;
       }
     } else {
       const selected = startSit.filter(Boolean);
 
-      if (selected.length < 2) {
-        alert("Choose at least two players.");
+      if (selected.length < 2 || selected.length > 5) {
+        alert("Choose between 2 and 5 players.");
         return;
       }
 
@@ -365,7 +369,8 @@ export default function Home() {
           submission_type: type === "Trade" ? "trade" : "start_sit",
           give_players: givePlayers,
           get_players: getPlayers,
-          players: selectedPlayers
+          players: selectedPlayers,
+          comments: comments.trim() || null
         });
 
       if (error) {
@@ -379,6 +384,7 @@ export default function Home() {
       setStep(1);
       setTiktok("");
       setType(null);
+      setComments("");
       setSending([""]);
       setReceiving([""]);
       setStartSit(["", ""]);
@@ -405,6 +411,39 @@ export default function Home() {
     color: "white",
     marginBottom: 20
   };
+
+  const commentsBox = (
+    <div style={{ marginTop: 24, marginBottom: 18 }}>
+      <label>TEAM DETAILS / COMMENTS (OPTIONAL)</label>
+      <textarea
+        value={comments}
+        onChange={(e) => setComments(e.target.value)}
+        placeholder="Add your team record, injuries, matchups, concerns, or anything else we should know..."
+        rows={5}
+        maxLength={1500}
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          padding: 14,
+          marginTop: 8,
+          borderRadius: 10,
+          border: "1px solid #555",
+          background: "#202020",
+          color: "white",
+          font: "inherit",
+          resize: "vertical"
+        }}
+      />
+      <div style={{
+        textAlign: "right",
+        color: "#888",
+        fontSize: 11,
+        marginTop: 5
+      }}>
+        {comments.length}/1500
+      </div>
+    </div>
+  );
 
   return (
     <main>
@@ -546,6 +585,8 @@ export default function Home() {
                     </button>
                   )}
 
+                  {commentsBox}
+
                   <button
                     style={{ marginTop: 22 }}
                     onClick={submitQuestion}
@@ -559,7 +600,7 @@ export default function Home() {
               {type === "Start/Sit" && (
                 <>
                   <h2>Start / Sit Question</h2>
-                  <p>Choose 2 or 3 players to compare.</p>
+                  <p>Choose between 2 and 5 players to compare.</p>
 
                   {startSit.map((id, index) => (
                     <div key={`start-${index}`}>
@@ -586,16 +627,18 @@ export default function Home() {
                     </div>
                   ))}
 
-                  {startSit.length < 3 && (
+                  {startSit.length < 5 && (
                     <button
                       style={addButtonStyle}
                       onClick={() =>
-                        addPlayer(startSit, setStartSit, 3)
+                        addPlayer(startSit, setStartSit, 5)
                       }
                     >
                       + ADD PLAYER
                     </button>
                   )}
+
+                  {commentsBox}
 
                   <button
                     style={{ marginTop: 22 }}
