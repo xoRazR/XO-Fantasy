@@ -491,7 +491,9 @@ export default function AdminPage() {
     );
 
     if (selectedPlayers.length !== selectedPlayerIds.length) {
-      alert("There was a problem identifying your selected players. Please select them again.");
+      alert(
+        "There was a problem identifying your selected players. Please select them again."
+      );
       return;
     }
 
@@ -791,130 +793,160 @@ export default function AdminPage() {
                       </h2>
 
                       {currentSubmission.submission_type === "trade" ? (
-                        <div className="trade-grid">
-                          <div className="trade-side give-side">
-                            <h3>THEY GIVE</h3>
+                        <>
+                          <div className="trade-grid">
+                            <div className="trade-side give-side">
+                              <h3>THEY GIVE</h3>
 
-                            {currentSubmission.give_players?.length ? (
-                              currentSubmission.give_players.map(
-                                (player, index) => (
-                                  <PlayerBar
-                                    key={player.id || index}
-                                    player={player}
-                                  />
+                              {currentSubmission.give_players?.length ? (
+                                currentSubmission.give_players.map(
+                                  (player, index) => (
+                                    <PlayerBar
+                                      key={player.id || index}
+                                      player={player}
+                                    />
+                                  )
                                 )
-                              )
-                            ) : (
-                              <p className="no-players">No players listed</p>
-                            )}
+                              ) : (
+                                <p className="no-players">No players listed</p>
+                              )}
+                            </div>
+
+                            <div className="trade-side get-side">
+                              <h3>THEY GET</h3>
+
+                              {currentSubmission.get_players?.length ? (
+                                currentSubmission.get_players.map(
+                                  (player, index) => (
+                                    <PlayerBar
+                                      key={player.id || index}
+                                      player={player}
+                                    />
+                                  )
+                                )
+                              ) : (
+                                <p className="no-players">No players listed</p>
+                              )}
+                            </div>
                           </div>
 
-                          <div className="trade-side get-side">
-                            <h3>THEY GET</h3>
-
-                            {currentSubmission.get_players?.length ? (
-                              currentSubmission.get_players.map(
-                                (player, index) => (
-                                  <PlayerBar
-                                    key={player.id || index}
-                                    player={player}
-                                  />
-                                )
-                              )
-                            ) : (
-                              <p className="no-players">No players listed</p>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="start-sit-area">
-                          <h3>SELECT 2 OR 3 PLAYERS</h3>
-
-                          <p className="selection-instructions">
-                            Click the players you want to START. Selected players
-                            will turn green.
-                          </p>
-
-                          {currentSubmission.players?.map(
-                            (player, index) => {
-                              const playerId =
-                                player.id || `player-${index}`;
-
-                              return (
-                                <SelectablePlayer
-                                  key={playerId}
-                                  player={player}
-                                  selected={selectedPlayerIds.includes(playerId)}
-                                  onClick={() =>
-                                    togglePlayerSelection(player, index)
-                                  }
-                                />
-                              );
-                            }
+                          {currentSubmission.comments?.trim() && (
+                            <div className="comment-box">
+                              <h3>♠ VIEWER'S NOTES ♠</h3>
+                              <p>{currentSubmission.comments}</p>
+                            </div>
                           )}
 
-                          <div className="selection-count">
-                            {selectedPlayerIds.length} OF 2–3 SELECTED
+                          <div className="decision-buttons">
+                            <button
+                              type="button"
+                              disabled={!!processingId || resetting}
+                              onClick={() =>
+                                processSubmission(currentSubmission, "accepted")
+                              }
+                              className="accept-button"
+                            >
+                              {processingId === currentSubmission.id
+                                ? "PROCESSING..."
+                                : "✓ ACCEPT"}
+                            </button>
+
+                            <button
+                              type="button"
+                              disabled={!!processingId || resetting}
+                              onClick={() =>
+                                processSubmission(currentSubmission, "declined")
+                              }
+                              className="decline-button"
+                            >
+                              {processingId === currentSubmission.id
+                                ? "PROCESSING..."
+                                : "✕ DECLINE"}
+                            </button>
                           </div>
-                        </div>
-                      )}
-
-                      {currentSubmission.comments?.trim() && (
-                        <div className="comment-box">
-                          <h3>VIEWER'S NOTES</h3>
-                          <p>{currentSubmission.comments}</p>
-                        </div>
-                      )}
-
-                      {currentSubmission.submission_type === "trade" ? (
-                        <div className="decision-buttons">
-                          <button
-                            type="button"
-                            disabled={!!processingId || resetting}
-                            onClick={() =>
-                              processSubmission(currentSubmission, "accepted")
-                            }
-                            className="accept-button"
-                          >
-                            {processingId === currentSubmission.id
-                              ? "PROCESSING..."
-                              : "✓ ACCEPT"}
-                          </button>
-
-                          <button
-                            type="button"
-                            disabled={!!processingId || resetting}
-                            onClick={() =>
-                              processSubmission(currentSubmission, "declined")
-                            }
-                            className="decline-button"
-                          >
-                            {processingId === currentSubmission.id
-                              ? "PROCESSING..."
-                              : "✕ DECLINE"}
-                          </button>
-                        </div>
+                        </>
                       ) : (
-                        <div className="start-sit-submit-area">
-                          <button
-                            type="button"
-                            className="submit-picks-button"
-                            disabled={
-                              !!processingId ||
-                              resetting ||
-                              selectedPlayerIds.length < 2 ||
-                              selectedPlayerIds.length > 3
-                            }
-                            onClick={() =>
-                              submitStartSitPicks(currentSubmission)
-                            }
-                          >
-                            {processingId === currentSubmission.id
-                              ? "SUBMITTING..."
-                              : `★ SUBMIT PICKS (${selectedPlayerIds.length}/3)`}
-                          </button>
-                          <p>Choose 2 or 3 players to complete this question.</p>
-                        </div>
+                        <>
+                          <div className="start-sit-layout">
+                            <div className="start-sit-area">
+                              <h3>SELECT 2 OR 3 PLAYERS</h3>
+
+                              <p className="selection-instructions">
+                                Click the players you want to START. Selected
+                                players will turn green.
+                              </p>
+
+                              {currentSubmission.players?.map(
+                                (player, index) => {
+                                  const playerId =
+                                    player.id || `player-${index}`;
+
+                                  return (
+                                    <SelectablePlayer
+                                      key={playerId}
+                                      player={player}
+                                      selected={selectedPlayerIds.includes(playerId)}
+                                      onClick={() =>
+                                        togglePlayerSelection(player, index)
+                                      }
+                                    />
+                                  );
+                                }
+                              )}
+
+                              <div className="selection-count">
+                                {selectedPlayerIds.length} OF 2–3 SELECTED
+                              </div>
+                            </div>
+
+                            <aside className="start-sit-submit-area">
+                              <div className="submit-panel-icon">★</div>
+                              <h3>YOUR START ’EM PICKS</h3>
+                              <p>
+                                Select 2 or 3 players from the list, then submit
+                                your picks here.
+                              </p>
+
+                              <div className="submit-selection-number">
+                                {selectedPlayerIds.length}
+                                <span> / 3</span>
+                              </div>
+
+                              <button
+                                type="button"
+                                className="submit-picks-button"
+                                disabled={
+                                  !!processingId ||
+                                  resetting ||
+                                  selectedPlayerIds.length < 2 ||
+                                  selectedPlayerIds.length > 3
+                                }
+                                onClick={() =>
+                                  submitStartSitPicks(currentSubmission)
+                                }
+                              >
+                                {processingId === currentSubmission.id
+                                  ? "SUBMITTING..."
+                                  : "★ SUBMIT PICKS"}
+                              </button>
+
+                              <div className="submit-panel-footnote">
+                                {selectedPlayerIds.length < 2
+                                  ? "CHOOSE AT LEAST 2 PLAYERS"
+                                  : selectedPlayerIds.length > 3
+                                    ? "MAXIMUM 3 PLAYERS"
+                                    : "READY TO SUBMIT"}
+                              </div>
+                            </aside>
+                          </div>
+
+                          {currentSubmission.comments?.trim() && (
+                            <div className="comment-box">
+                              <h3>♠ VIEWER'S NOTES ♠</h3>
+                              <p>{currentSubmission.comments}</p>
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
 
@@ -1051,7 +1083,10 @@ export default function AdminPage() {
                         <div className="selected-history">
                           <h3>★ START ’EM PICKS</h3>
                           {item.selected_players.map((player, index) => (
-                            <div className="history-selected-player" key={player.id || index}>
+                            <div
+                              className="history-selected-player"
+                              key={player.id || index}
+                            >
                               <span>✓</span>
                               <PlayerBar player={player} />
                             </div>
@@ -1063,7 +1098,7 @@ export default function AdminPage() {
 
                   {item.comments?.trim() && (
                     <div className="comment-box history-comment">
-                      <h3>VIEWER'S NOTES</h3>
+                      <h3>♠ VIEWER'S NOTES ♠</h3>
                       <p>{item.comments}</p>
                     </div>
                   )}
@@ -1337,10 +1372,10 @@ const styles = `
     align-items: center;
     gap: 20px;
     width: 100%;
-    max-width: 1250px;
+    max-width: 1450px;
     max-height: 100%;
     min-height: 0;
-    overflow: hidden;
+    overflow: auto;
     margin: 0 auto;
     padding: clamp(10px, 1.5vh, 20px);
     border: 1px solid rgba(226,195,128,.55);
@@ -1520,8 +1555,19 @@ const styles = `
     font-size: 12px;
   }
 
+  /* START/SIT: players on the left, submit panel on the right */
+
+  .start-sit-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(230px, 290px);
+    align-items: stretch;
+    gap: 14px;
+    width: 100%;
+    min-width: 0;
+  }
+
   .start-sit-area {
-    max-width: 700px;
+    min-width: 0;
     max-height: 100%;
     overflow-y: auto;
     padding: 12px;
@@ -1599,21 +1645,80 @@ const styles = `
     text-align: center;
   }
 
+  /* The submit control is a separate panel beside the players. */
+
   .start-sit-submit-area {
-    margin-top: 12px;
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-width: 0;
+    min-height: 220px;
+    padding: 20px 16px;
     text-align: center;
+    border: 2px solid rgba(114,210,140,.7);
+    border-radius: 15px;
+    background:
+      radial-gradient(ellipse at top, rgba(72,157,91,.25), transparent 70%),
+      linear-gradient(145deg, rgba(7,32,19,.96), rgba(10,24,16,.96));
+    box-shadow:
+      inset 0 0 25px rgba(0,0,0,.35),
+      0 8px 22px rgba(0,0,0,.25),
+      0 0 16px rgba(91,220,126,.08);
+  }
+
+  .submit-panel-icon {
+    display: grid;
+    place-items: center;
+    width: 42px;
+    height: 42px;
+    margin-bottom: 10px;
+    border: 1px solid #8ac69b;
+    border-radius: 50%;
+    color: #a4e1ad;
+    background: rgba(41,145,76,.2);
+    font-size: 22px;
+  }
+
+  .start-sit-submit-area h3 {
+    color: #a4e1ad;
+    font-size: 12px;
+    letter-spacing: 2px;
+    margin: 0 0 8px;
+  }
+
+  .start-sit-submit-area p {
+    color: #b7c8bb;
+    font-size: 11px;
+    line-height: 1.5;
+    margin: 0 0 12px;
+  }
+
+  .submit-selection-number {
+    color: #a4e1ad;
+    font-size: 34px;
+    font-weight: 900;
+    line-height: 1;
+    margin: 4px 0 14px;
+  }
+
+  .submit-selection-number span {
+    color: #8d9e91;
+    font-size: 17px;
   }
 
   .submit-picks-button {
     width: 100%;
-    padding: 14px;
+    min-height: 48px;
+    padding: 13px 10px;
     border: 1px solid #8ac69b;
     border-radius: 9px;
     color: #082113;
     background: linear-gradient(135deg, #a8edb5, #4caa6a);
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 900;
-    letter-spacing: 2px;
+    letter-spacing: 1.5px;
     cursor: pointer;
     box-shadow: 0 4px 15px rgba(0,0,0,.25);
   }
@@ -1624,34 +1729,68 @@ const styles = `
     color: #c5d0c7;
   }
 
-  .start-sit-submit-area p {
-    color: #b7c8bb;
-    font-size: 10px;
-    margin: 7px 0 0;
+  .submit-panel-footnote {
+    color: #a4e1ad;
+    font-size: 9px;
+    font-weight: 900;
+    letter-spacing: 1px;
+    margin-top: 12px;
   }
 
+  /* Poker-table-style viewer notes */
+
   .comment-box {
+    position: relative;
     margin-top: 12px;
-    padding: 11px 13px;
-    border: 1px solid rgba(232,199,125,.4);
-    border-radius: 10px;
-    background: rgba(0,0,0,.28);
+    padding: 13px 16px;
+    border: 2px solid #b18b50;
+    border-radius: 8px;
+    background:
+      repeating-linear-gradient(
+        0deg,
+        rgba(255,255,255,.018) 0px,
+        rgba(255,255,255,.018) 1px,
+        transparent 1px,
+        transparent 4px
+      ),
+      linear-gradient(145deg, #17271e, #0c1b13);
+    box-shadow:
+      inset 0 0 0 3px rgba(232,199,125,.08),
+      inset 0 0 18px rgba(0,0,0,.4),
+      0 5px 14px rgba(0,0,0,.2);
   }
+
+  .comment-box::before,
+  .comment-box::after {
+    content: "✦";
+    position: absolute;
+    top: 10px;
+    color: #b18b50;
+    font-size: 12px;
+  }
+
+  .comment-box::before { left: 11px; }
+  .comment-box::after { right: 11px; }
 
   .comment-box h3 {
     color: #e8c77d;
     font-size: 10px;
-    letter-spacing: 2px;
-    margin: 0 0 6px;
+    letter-spacing: 3px;
+    text-align: center;
+    margin: 0 20px 9px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid rgba(232,199,125,.35);
   }
 
   .comment-box p {
-    color: #eee6d5;
-    font-size: 12px;
-    line-height: 1.5;
+    color: #f2ead9;
+    font-family: Georgia, serif;
+    font-size: 13px;
+    line-height: 1.6;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     margin: 0;
+    text-align: center;
   }
 
   .decision-buttons {
@@ -2147,6 +2286,23 @@ const styles = `
     .queue-name, .queue-label { min-height: 38px; }
     .queue-note { margin-top: 4px; }
     .table-footer { padding-top: 6px; }
+    .start-sit-submit-area { min-height: 190px; padding: 14px 12px; }
+    .submit-panel-icon { width: 34px; height: 34px; }
+    .submit-selection-number { font-size: 28px; margin: 2px 0 10px; }
+  }
+
+  @media (max-width: 1000px) {
+    .current-submission {
+      grid-template-columns: minmax(0, 1fr) 125px;
+      gap: 12px;
+    }
+
+    .start-sit-layout {
+      grid-template-columns: minmax(0, 1fr) 220px;
+      gap: 10px;
+    }
+
+    .chip { width: 115px; height: 115px; }
   }
 
   @media (max-width: 800px) {
@@ -2173,6 +2329,19 @@ const styles = `
     .chip-number { font-size: 25px; }
     .trade-grid { grid-template-columns: 1fr; }
     .main-table-area { overflow-y: auto; }
+
+    .start-sit-layout {
+      grid-template-columns: 1fr;
+    }
+
+    .start-sit-submit-area {
+      min-height: auto;
+      padding: 16px;
+    }
+
+    .submit-picks-button {
+      max-width: 360px;
+    }
   }
 
   @media (max-width: 560px) {
