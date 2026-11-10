@@ -35,6 +35,8 @@ const supabase =
 
 const gold = "#e8c77d";
 
+let decisionAudioContext: AudioContext | null = null;
+
 function queueName(username: string) {
   return username.length > 8
     ? `${username.slice(0, 8)}...`
@@ -55,6 +57,7 @@ function PlayerBar({ player }: { player: Player }) {
       ) : (
         <div className="player-placeholder">?</div>
       )}
+
       <div className="player-info">
         <strong>{player.name}</strong>
         <span>{player.position} · {player.team}</span>
@@ -77,6 +80,62 @@ function SubmissionChip({ number }: { number?: number }) {
   );
 }
 
+function playDecisionSound(
+  context: AudioContext,
+  type: "accepted" | "declined",
+  volume: number
+) {
+  if (volume <= 0) return;
+
+  const now = context.currentTime;
+  const master = context.createGain();
+
+  master.gain.setValueAtTime(volume / 100, now);
+  master.connect(context.destination);
+
+  function tone(
+    frequency: number,
+    start: number,
+    duration: number,
+    wave: OscillatorType,
+    loudness: number
+  ) {
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+
+    oscillator.type = wave;
+    oscillator.frequency.setValueAtTime(frequency, start);
+
+    gain.gain.setValueAtTime(0.001, start);
+    gain.gain.exponentialRampToValueAtTime(
+      loudness,
+      start + 0.015
+    );
+    gain.gain.exponentialRampToValueAtTime(
+      0.001,
+      start + duration
+    );
+
+    oscillator.connect(gain);
+    gain.connect(master);
+
+    oscillator.start(start);
+    oscillator.stop(start + duration + 0.03);
+  }
+
+  if (type === "accepted") {
+    // Cash-register-style cha-ching
+    tone(880, now, 0.18, "sine", 0.45);
+    tone(1175, now + 0.13, 0.22, "sine", 0.45);
+    tone(1568, now + 0.29, 0.35, "triangle", 0.35);
+    tone(2200, now + 0.31, 0.16, "sine", 0.16);
+  } else {
+    // Separate lower-pitched decline sound
+    tone(330, now, 0.24, "triangle", 0.35);
+    tone(220, now + 0.2, 0.38, "sine", 0.3);
+  }
+}
+
 export default function AdminPage() {
   const [session, setSession] = useState<Session | null>(null);
   const [checkingLogin, setCheckingLogin] = useState(true);
@@ -95,17 +154,6 @@ export default function AdminPage() {
 
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(80);
-
-  function playCashSound() {
-    if (muted || volume === 0) return;
-
-    const sound = new Audio("/sounds/cash-register.mp3");
-    sound.volume = volume / 100;
-
-    void sound.play().catch((error) => {
-      console.warn("Could not play cash-register sound:", error);
-    });
-  }
 
   const loadSubmissions = useCallback(async () => {
     if (!supabase) return;
@@ -248,23 +296,43 @@ export default function AdminPage() {
 
     setProcessingId(item.id);
 
-    const { error } = await supabase
-      .from("submissions")
-      .update({
-        status,
-        processed_at: new Date().toISOString()
-      })
-      .eq("id", item.id);
+    try {
+      // Start or resume audio while the browser still has the button interaction.
+      if (typeof window !== "undefined" && "AudioContext" in window) {
+        if (!decisionAudioContext) {
+          decisionAudioContext = new AudioContext();
+        }
 
-    if (error) {
-      console.error(error);
-      alert("Couldn't update this submission. Please try again.");
-    } else {
-      if (status === "accepted") {
-        playCashSound();
+        if (decisionAudioContext.state === "suspended") {
+          await decisionAudioContext.resume();
+        }
       }
 
-      await loadSubmissions();
+      const { error } = await supabase
+        .from("submissions")
+        .update({
+          status,
+          processed_at: new Date().toISOString()
+        })
+        .eq("id", item.id);
+
+      if (error) {
+        console.error(error);
+        alert("Couldn't update this submission. Please try again.");
+      } else {
+        if (!muted && volume > 0 && decisionAudioContext) {
+          playDecisionSound(
+            decisionAudioContext,
+            status,
+            volume
+          );
+        }
+
+        await loadSubmissions();
+      }
+    } catch (error) {
+      console.error("Could not process submission:", error);
+      alert("Something went wrong. Please try again.");
     }
 
     setProcessingId("");
@@ -290,8 +358,12 @@ export default function AdminPage() {
   const nextUp = pending.slice(1, 5);
 
   const pageStyle: React.CSSProperties = {
-    minHeight: "100vh",
-    padding: 16,
+    height: "100dvh",
+    minHeight: 0,
+    width: "100%",
+    padding: 10,
+    boxSizing: "border-box",
+    overflow: "hidden",
     color: "#fff",
     fontFamily: "Arial, sans-serif",
     background:
@@ -356,6 +428,7 @@ export default function AdminPage() {
             </button>
           </form>
         </section>
+
         <style jsx>{styles}</style>
       </main>
     );
@@ -375,6 +448,7 @@ export default function AdminPage() {
           <div className="top-controls">
             <div className="sound-control">
               <button
+                type="button"
                 className="small-control"
                 onClick={() => setMuted(!muted)}
                 title={muted ? "Unmute sound" : "Mute sound"}
@@ -394,7 +468,6 @@ export default function AdminPage() {
               <span className="volume-number">{volume}%</span>
             </div>
 
-            {/* END STREAM BUTTON */}
             <button
               type="button"
               className="end-stream-button"
@@ -404,7 +477,6 @@ export default function AdminPage() {
               {resetting ? "ENDING..." : "END STREAM"}
             </button>
 
-            {/* LOG OUT BUTTON */}
             <button
               type="button"
               className="small-control"
@@ -476,6 +548,7 @@ export default function AdminPage() {
                             ).toLocaleString()}
                           </div>
                         </div>
+
                         <span className="pending-badge">PENDING</span>
                       </div>
 
@@ -489,6 +562,7 @@ export default function AdminPage() {
                         <div className="trade-grid">
                           <div className="trade-side give-side">
                             <h3>THEY GIVE</h3>
+
                             {currentSubmission.give_players?.length ? (
                               currentSubmission.give_players.map(
                                 (player, index) => (
@@ -505,6 +579,7 @@ export default function AdminPage() {
 
                           <div className="trade-side get-side">
                             <h3>THEY GET</h3>
+
                             {currentSubmission.get_players?.length ? (
                               currentSubmission.get_players.map(
                                 (player, index) => (
@@ -522,6 +597,7 @@ export default function AdminPage() {
                       ) : (
                         <div className="start-sit-area">
                           <h3>PLAYERS TO COMPARE</h3>
+
                           {currentSubmission.players?.map(
                             (player, index) => (
                               <PlayerBar
@@ -535,6 +611,7 @@ export default function AdminPage() {
 
                       <div className="decision-buttons">
                         <button
+                          type="button"
                           disabled={!!processingId || resetting}
                           onClick={() =>
                             processSubmission(currentSubmission, "accepted")
@@ -547,6 +624,7 @@ export default function AdminPage() {
                         </button>
 
                         <button
+                          type="button"
                           disabled={!!processingId || resetting}
                           onClick={() =>
                             processSubmission(currentSubmission, "declined")
@@ -629,6 +707,7 @@ export default function AdminPage() {
                       <span className="history-number">
                         #{item.submission_number ?? "—"}
                       </span>
+
                       <span
                         className={
                           item.status === "accepted"
@@ -702,10 +781,11 @@ const styles = `
 
   .casino-table {
     width: 100%;
-    min-height: calc(100vh - 32px);
+    height: calc(100dvh - 20px);
+    min-height: 0;
     max-width: 1800px;
     margin: 0 auto;
-    padding: 24px;
+    padding: 18px 24px 12px;
     border: 5px solid #9d7a3d;
     border-radius: 34px;
     outline: 2px solid #d6b76e;
@@ -720,6 +800,8 @@ const styles = `
       0 20px 70px rgba(0,0,0,.65);
     position: relative;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
   }
 
   .top-bar {
@@ -728,13 +810,14 @@ const styles = `
     justify-content: space-between;
     gap: 18px;
     flex-wrap: wrap;
-    padding: 4px 12px 20px;
+    flex-shrink: 0;
+    padding: 4px 12px 12px;
     border-bottom: 1px solid rgba(232,199,125,.38);
   }
 
   .brand {
     color: #f3f1eb;
-    font-size: clamp(30px, 4vw, 43px);
+    font-size: clamp(26px, 3vw, 43px);
     font-weight: 900;
     letter-spacing: 3px;
     margin: 0;
@@ -782,7 +865,8 @@ const styles = `
     font-size: 10px;
   }
 
-  .small-control, .end-stream-button {
+  .small-control,
+  .end-stream-button {
     padding: 10px 12px;
     border-radius: 8px;
     background: linear-gradient(#343a35, #171d19);
@@ -792,6 +876,7 @@ const styles = `
     font-weight: 900;
     letter-spacing: 1px;
     cursor: pointer;
+    white-space: nowrap;
   }
 
   .end-stream-button {
@@ -803,7 +888,6 @@ const styles = `
     background: linear-gradient(#853c32, #4e211d);
     border: 1px solid #c17b62;
     color: #fff2e8;
-    white-space: nowrap;
     box-shadow: 0 0 12px rgba(193,123,98,.18);
   }
 
@@ -818,7 +902,8 @@ const styles = `
     align-items: center;
     gap: 12px;
     flex-wrap: wrap;
-    padding: 16px 8px 10px;
+    flex-shrink: 0;
+    padding: 10px 8px 5px;
     color: #e3d2a9;
     font-size: 10px;
     font-weight: 800;
@@ -842,12 +927,13 @@ const styles = `
     align-items: center;
     justify-content: center;
     flex-wrap: wrap;
+    flex-shrink: 0;
     gap: 9px;
-    margin: 8px 0 20px;
+    margin: 5px 0 8px;
   }
 
   .tab {
-    padding: 10px 16px;
+    padding: 9px 15px;
     border-radius: 7px;
     border: 1px solid rgba(232,199,125,.45);
     background: rgba(0,0,0,.22);
@@ -870,8 +956,13 @@ const styles = `
   }
 
   .main-table-area {
-    min-height: 380px;
-    padding: 12px 0 20px;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 4px 0;
   }
 
   .current-heading {
@@ -879,12 +970,13 @@ const styles = `
     align-items: center;
     justify-content: center;
     gap: 14px;
+    flex-shrink: 0;
     color: #f0dba8;
     font-size: 12px;
     font-weight: 900;
     letter-spacing: 4px;
     text-align: center;
-    margin: 8px 0 22px;
+    margin: 5px 0 10px;
   }
 
   .gold-line {
@@ -899,12 +991,16 @@ const styles = `
 
   .current-submission {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 210px;
+    grid-template-columns: minmax(0, 1fr) 190px;
     align-items: center;
-    gap: 25px;
+    gap: 20px;
+    width: 100%;
     max-width: 1250px;
+    max-height: 100%;
+    min-height: 0;
+    overflow: hidden;
     margin: 0 auto;
-    padding: 24px;
+    padding: clamp(10px, 1.5vh, 20px);
     border: 1px solid rgba(226,195,128,.55);
     border-radius: 20px;
     background: linear-gradient(145deg, rgba(8,26,18,.82), rgba(15,48,33,.82));
@@ -917,7 +1013,8 @@ const styles = `
     min-width: 0;
   }
 
-  .submission-topline, .history-top {
+  .submission-topline,
+  .history-top {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -938,7 +1035,9 @@ const styles = `
     margin: 5px 0;
   }
 
-  .pending-badge, .accepted-badge, .declined-badge {
+  .pending-badge,
+  .accepted-badge,
+  .declined-badge {
     padding: 7px 12px;
     border: 1px solid #d3b16b;
     border-radius: 30px;
@@ -946,31 +1045,34 @@ const styles = `
     font-size: 10px;
     font-weight: 900;
     letter-spacing: 1px;
+    white-space: nowrap;
   }
 
   .question-title {
     color: #f2e9d5;
     font-size: 14px;
     letter-spacing: 3px;
-    margin: 22px 0 13px;
+    margin: 13px 0 9px;
   }
 
   .trade-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 13px;
+    gap: 8px;
+    min-width: 0;
   }
 
   .trade-side {
     min-width: 0;
-    padding: 13px;
+    padding: 9px;
     border-radius: 12px;
   }
 
-  .trade-side h3, .start-sit-area h3 {
+  .trade-side h3,
+  .start-sit-area h3 {
     font-size: 12px;
     letter-spacing: 2px;
-    margin: 0 0 12px;
+    margin: 0 0 7px;
   }
 
   .give-side {
@@ -994,18 +1096,19 @@ const styles = `
   .player-bar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px;
-    margin-bottom: 7px;
+    gap: 8px;
+    padding: 5px;
+    margin-bottom: 4px;
     border: 1px solid rgba(255,255,255,.1);
     border-radius: 8px;
     background: rgba(0,0,0,.28);
     min-width: 0;
   }
 
-  .player-bar img, .player-placeholder {
-    width: 43px;
-    height: 43px;
+  .player-bar img,
+  .player-placeholder {
+    width: 36px;
+    height: 36px;
     flex-shrink: 0;
     border-radius: 50%;
     object-fit: cover;
@@ -1027,7 +1130,7 @@ const styles = `
   .player-info strong {
     display: block;
     color: #fff;
-    font-size: 13px;
+    font-size: 12px;
     overflow-wrap: anywhere;
   }
 
@@ -1035,7 +1138,7 @@ const styles = `
     display: block;
     color: #c3c5bd;
     font-size: 10px;
-    margin-top: 4px;
+    margin-top: 3px;
   }
 
   .no-players {
@@ -1045,7 +1148,9 @@ const styles = `
 
   .start-sit-area {
     max-width: 700px;
-    padding: 15px;
+    max-height: 100%;
+    overflow-y: auto;
+    padding: 12px;
     border: 1px solid rgba(232,199,125,.35);
     border-radius: 12px;
     background: rgba(0,0,0,.2);
@@ -1058,12 +1163,12 @@ const styles = `
   .decision-buttons {
     display: flex;
     gap: 12px;
-    margin-top: 17px;
+    margin-top: 9px;
   }
 
   .decision-buttons button {
     flex: 1;
-    padding: 14px;
+    padding: 11px;
     border-radius: 9px;
     color: white;
     font-size: 12px;
@@ -1091,8 +1196,8 @@ const styles = `
   }
 
   .chip {
-    width: 190px;
-    height: 190px;
+    width: clamp(115px, 16vh, 175px);
+    height: clamp(115px, 16vh, 175px);
     display: grid;
     place-items: center;
     border-radius: 50%;
@@ -1124,7 +1229,8 @@ const styles = `
     box-shadow: inset 0 0 20px rgba(0,0,0,.8);
   }
 
-  .chip-label, .chip-bottom {
+  .chip-label,
+  .chip-bottom {
     color: #d9c18b;
     font-size: 10px;
     font-weight: 900;
@@ -1133,14 +1239,15 @@ const styles = `
 
   .chip-number {
     color: #f6dfaa;
-    font-size: 43px;
+    font-size: clamp(28px, 4vh, 40px);
     font-weight: 900;
     text-shadow: 0 2px 10px rgba(0,0,0,.8);
     margin: 5px 0;
   }
 
   .empty-table {
-    min-height: 310px;
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -1150,7 +1257,7 @@ const styles = `
     border: 1px dashed rgba(232,199,125,.35);
     border-radius: 16px;
     background: rgba(0,0,0,.12);
-    padding: 25px;
+    padding: 20px;
   }
 
   .empty-table h2 {
@@ -1159,7 +1266,8 @@ const styles = `
     font-size: 16px;
   }
 
-  .empty-table p, .empty-table span {
+  .empty-table p,
+  .empty-table span {
     color: #c0c5bc;
     font-size: 12px;
   }
@@ -1181,17 +1289,19 @@ const styles = `
     grid-template-columns: 120px repeat(4, minmax(0, 1fr));
     gap: 10px;
     align-items: stretch;
-    margin-top: 24px;
-    padding: 12px;
+    flex-shrink: 0;
+    margin-top: 10px;
+    padding: 10px;
     border: 1px solid #b18b50;
     border-radius: 12px;
     background: linear-gradient(90deg, rgba(8,19,13,.88), rgba(19,54,37,.85));
     box-shadow: inset 0 0 15px rgba(0,0,0,.3);
   }
 
-  .queue-label, .queue-name {
+  .queue-label,
+  .queue-name {
     min-width: 0;
-    min-height: 48px;
+    min-height: 44px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1228,17 +1338,22 @@ const styles = `
   }
 
   .queue-note {
+    flex-shrink: 0;
     color: #bca77c;
     font-size: 9px;
     text-align: center;
     letter-spacing: 2px;
-    margin: 9px 0 0;
+    margin: 6px 0 0;
   }
 
   .history-area {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     max-width: 1250px;
+    width: 100%;
     margin: 0 auto;
-    padding: 10px 0 25px;
+    padding: 8px 5px 15px;
   }
 
   .history-item {
@@ -1274,14 +1389,15 @@ const styles = `
     color: #e8c77d;
     font-size: 11px;
     letter-spacing: 2px;
-    margin: 16px 0 10px;
+    margin: 12px 0 8px;
   }
 
   .table-footer {
-    padding: 25px 0 5px;
+    flex-shrink: 0;
+    padding: 10px 0 0;
     text-align: center;
     color: #bba77d;
-    font-size: 10px;
+    font-size: 9px;
     letter-spacing: 3px;
   }
 
@@ -1291,8 +1407,9 @@ const styles = `
   }
 
   .error-banner {
-    margin: 12px 0;
-    padding: 12px;
+    flex-shrink: 0;
+    margin: 5px 0;
+    padding: 8px 12px;
     border: 1px solid #b45c50;
     border-radius: 8px;
     color: #ffd0c8;
@@ -1369,15 +1486,79 @@ const styles = `
     font-size: 12px;
   }
 
+  /* Shorter screens: compress the layout to keep the live table visible. */
+  @media (max-height: 800px) {
+    .casino-table {
+      padding-top: 12px;
+      padding-bottom: 8px;
+    }
+
+    .brand {
+      font-size: 30px;
+    }
+
+    .top-bar {
+      padding-bottom: 8px;
+    }
+
+    .table-status {
+      padding-top: 6px;
+    }
+
+    .view-tabs {
+      margin-bottom: 5px;
+    }
+
+    .current-heading {
+      margin: 3px 0 7px;
+    }
+
+    .username {
+      font-size: 18px;
+    }
+
+    .question-title {
+      margin: 9px 0 7px;
+    }
+
+    .queue-section {
+      margin-top: 6px;
+      padding: 7px;
+    }
+
+    .queue-name,
+    .queue-label {
+      min-height: 38px;
+    }
+
+    .queue-note {
+      margin-top: 4px;
+    }
+
+    .table-footer {
+      padding-top: 6px;
+    }
+  }
+
   @media (max-width: 800px) {
     .casino-table {
-      padding: 17px;
+      padding: 12px;
       border-width: 3px;
       border-radius: 22px;
     }
 
+    .top-bar {
+      gap: 10px;
+    }
+
+    .top-controls {
+      justify-content: flex-start;
+      width: 100%;
+    }
+
     .current-submission {
       grid-template-columns: 1fr;
+      overflow-y: auto;
     }
 
     .chip-wrap {
@@ -1385,23 +1566,26 @@ const styles = `
     }
 
     .chip {
-      width: 130px;
-      height: 130px;
+      width: 100px;
+      height: 100px;
     }
 
     .chip-number {
-      font-size: 31px;
+      font-size: 25px;
     }
 
     .trade-grid {
       grid-template-columns: 1fr;
     }
+
+    .main-table-area {
+      overflow-y: auto;
+    }
   }
 
   @media (max-width: 560px) {
     .top-controls {
-      justify-content: flex-start;
-      width: 100%;
+      gap: 6px;
     }
 
     .sound-control {
@@ -1410,6 +1594,7 @@ const styles = `
 
     .queue-section {
       grid-template-columns: 1fr 1fr;
+      gap: 6px;
     }
 
     .queue-label {
@@ -1417,7 +1602,7 @@ const styles = `
     }
 
     .queue-name {
-      min-height: 42px;
+      min-height: 36px;
     }
 
     .decision-buttons {
@@ -1425,7 +1610,7 @@ const styles = `
     }
 
     .current-submission {
-      padding: 15px;
+      padding: 10px;
     }
 
     .table-status {
@@ -1435,6 +1620,14 @@ const styles = `
 
     .refresh-tab {
       margin-left: 0;
+    }
+
+    .brand {
+      font-size: 25px;
+    }
+
+    .eyebrow {
+      letter-spacing: 2px;
     }
   }
 `;
