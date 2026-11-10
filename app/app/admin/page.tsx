@@ -69,9 +69,7 @@ function SubmissionChip({ number }: { number?: number }) {
       <div className="chip">
         <div className="chip-inner">
           <div className="chip-label">SUBMISSION</div>
-          <div className="chip-number">
-            #{number ?? "—"}
-          </div>
+          <div className="chip-number">#{number ?? "—"}</div>
           <div className="chip-bottom">ASK XO</div>
         </div>
       </div>
@@ -274,16 +272,18 @@ export default function AdminPage() {
 
   const pending = submissions
     .filter((item) => item.status === "pending")
-    .sort((a, b) =>
-      new Date(a.created_at).getTime() -
-      new Date(b.created_at).getTime()
+    .sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() -
+        new Date(b.created_at).getTime()
     );
 
   const history = submissions
     .filter((item) => item.status !== "pending")
-    .sort((a, b) =>
-      new Date(b.processed_at || b.created_at).getTime() -
-      new Date(a.processed_at || a.created_at).getTime()
+    .sort(
+      (a, b) =>
+        new Date(b.processed_at || b.created_at).getTime() -
+        new Date(a.processed_at || a.created_at).getTime()
     );
 
   const currentSubmission = pending[0] ?? null;
@@ -296,16 +296,6 @@ export default function AdminPage() {
     fontFamily: "Arial, sans-serif",
     background:
       "radial-gradient(ellipse at center, #173c2c 0%, #0c241b 70%, #080e0b 100%)"
-  };
-
-  const buttonStyle: React.CSSProperties = {
-    border: "1px solid #9d8049",
-    borderRadius: 8,
-    padding: "11px 16px",
-    cursor: "pointer",
-    fontWeight: 800,
-    letterSpacing: 1,
-    fontSize: 11
   };
 
   if (!supabase) {
@@ -404,7 +394,9 @@ export default function AdminPage() {
               <span className="volume-number">{volume}%</span>
             </div>
 
+            {/* END STREAM BUTTON */}
             <button
+              type="button"
               className="end-stream-button"
               onClick={endStream}
               disabled={resetting || loading || !!processingId}
@@ -412,7 +404,12 @@ export default function AdminPage() {
               {resetting ? "ENDING..." : "END STREAM"}
             </button>
 
-            <button className="small-control" onClick={handleLogout}>
+            {/* LOG OUT BUTTON */}
+            <button
+              type="button"
+              className="small-control"
+              onClick={handleLogout}
+            >
               LOG OUT
             </button>
           </div>
@@ -434,12 +431,14 @@ export default function AdminPage() {
           >
             LIVE TABLE ({pending.length})
           </button>
+
           <button
             className={view === "history" ? "tab active-tab" : "tab"}
             onClick={() => setView("history")}
           >
             HISTORY ({history.length})
           </button>
+
           <button
             className="tab refresh-tab"
             onClick={loadSubmissions}
@@ -625,6 +624,7 @@ export default function AdminPage() {
                         {new Date(item.created_at).toLocaleString()}
                       </p>
                     </div>
+
                     <div className="history-right">
                       <span className="history-number">
                         #{item.submission_number ?? "—"}
@@ -658,6 +658,7 @@ export default function AdminPage() {
                           />
                         ))}
                       </div>
+
                       <div className="trade-side get-side">
                         <h3>THEY GET</h3>
                         {item.get_players?.map((player, index) => (
@@ -794,9 +795,16 @@ const styles = `
   }
 
   .end-stream-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 38px;
+    padding: 10px 16px;
     background: linear-gradient(#853c32, #4e211d);
-    border-color: #c17b62;
+    border: 1px solid #c17b62;
     color: #fff2e8;
+    white-space: nowrap;
+    box-shadow: 0 0 12px rgba(193,123,98,.18);
   }
 
   button:disabled {
