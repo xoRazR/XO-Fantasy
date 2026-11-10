@@ -5,23 +5,37 @@ import { useEffect, useState } from "react";
 
 type Trade = {
   id: string;
-  team: string;
+  tiktok: string;
   sending: string[];
   receiving: string[];
   createdAt: string;
 };
 
 const players = [
-  "Josh Allen", "Lamar Jackson", "Jalen Hurts", "Patrick Mahomes",
-  "Joe Burrow", "Jayden Daniels", "Saquon Barkley", "Derrick Henry",
-  "Bijan Robinson", "Jahmyr Gibbs", "Christian McCaffrey",
-  "Justin Jefferson", "Ja'Marr Chase", "CeeDee Lamb",
-  "Tyreek Hill", "Amon-Ra St. Brown", "Puka Nacua",
-  "Travis Kelce", "Sam LaPorta", "George Kittle"
+  "Josh Allen",
+  "Lamar Jackson",
+  "Jalen Hurts",
+  "Patrick Mahomes",
+  "Joe Burrow",
+  "Jayden Daniels",
+  "Saquon Barkley",
+  "Derrick Henry",
+  "Bijan Robinson",
+  "Jahmyr Gibbs",
+  "Christian McCaffrey",
+  "Justin Jefferson",
+  "Ja'Marr Chase",
+  "CeeDee Lamb",
+  "Tyreek Hill",
+  "Amon-Ra St. Brown",
+  "Puka Nacua",
+  "Travis Kelce",
+  "Sam LaPorta",
+  "George Kittle"
 ];
 
 export default function Home() {
-  const [team, setTeam] = useState("");
+  const [tiktok, setTiktok] = useState("");
   const [sending, setSending] = useState(["", ""]);
   const [receiving, setReceiving] = useState(["", ""]);
   const [queue, setQueue] = useState<Trade[]>([]);
@@ -35,14 +49,18 @@ export default function Home() {
   }, []);
 
   function submitTrade() {
-    if (!team.trim() || !sending[0] || !receiving[0]) {
-      alert("Enter your team name and select at least one player on each side.");
+    if (!tiktok.trim() || !sending[0] || !receiving[0]) {
+      alert("Enter your TikTok @ and select at least one player on each side.");
       return;
     }
 
+    const username = tiktok.trim().startsWith("@")
+      ? tiktok.trim()
+      : "@" + tiktok.trim();
+
     const trade: Trade = {
       id: crypto.randomUUID(),
-      team: team.trim(),
+      tiktok: username,
       sending: sending.filter(Boolean),
       receiving: receiving.filter(Boolean),
       createdAt: new Date().toLocaleTimeString()
@@ -51,10 +69,12 @@ export default function Home() {
     const updated = [trade, ...queue];
     setQueue(updated);
     localStorage.setItem("xo-trades", JSON.stringify(updated));
-    setTeam("");
+
+    setTiktok("");
     setSending(["", ""]);
     setReceiving(["", ""]);
-    alert("Trade submitted!");
+
+    alert("Your trade has been submitted!");
   }
 
   function removeTrade(id: string) {
@@ -63,12 +83,20 @@ export default function Home() {
     localStorage.setItem("xo-trades", JSON.stringify(updated));
   }
 
-  function playerSelect(value: string, onChange: (value: string) => void) {
+  function playerSelect(
+    value: string,
+    onChange: (value: string) => void
+  ) {
     return (
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      >
         <option value="">Choose a player</option>
         {players.map((player) => (
-          <option key={player} value={player}>{player}</option>
+          <option key={player} value={player}>
+            {player}
+          </option>
         ))}
       </select>
     );
@@ -77,51 +105,85 @@ export default function Home() {
   return (
     <main>
       <header>
-        <h1>XO <span>FANTASY</span></h1>
-        <p>THE TRADE CENTER</p>
+        <h1>ASK<span>XO</span></h1>
+        <p>THE FANTASY TRADE CENTER</p>
       </header>
 
       <section className="panel">
         <h2>Submit Your Trade</h2>
-        <label>Your team name</label>
+
+        <label>YOUR EXACT TIKTOK @</label>
         <input
-          value={team}
-          onChange={(e) => setTeam(e.target.value)}
-          placeholder="Enter your team name"
+          value={tiktok}
+          onChange={(e) => setTiktok(e.target.value)}
+          placeholder="@yourtiktokusername"
         />
 
         <div className="trade-grid">
           <div>
             <h3>YOU SEND</h3>
-            {playerSelect(sending[0], (v) => setSending([v, sending[1]]))}
-            {playerSelect(sending[1], (v) => setSending([sending[0], v]))}
+            {playerSelect(
+              sending[0],
+              (v) => setSending([v, sending[1]])
+            )}
+            {playerSelect(
+              sending[1],
+              (v) => setSending([sending[0], v])
+            )}
           </div>
+
           <div>
             <h3>YOU RECEIVE</h3>
-            {playerSelect(receiving[0], (v) => setReceiving([v, receiving[1]]))}
-            {playerSelect(receiving[1], (v) => setReceiving([receiving[0], v]))}
+            {playerSelect(
+              receiving[0],
+              (v) => setReceiving([v, receiving[1]])
+            )}
+            {playerSelect(
+              receiving[1],
+              (v) => setReceiving([receiving[0], v])
+            )}
           </div>
         </div>
 
-        <button onClick={submitTrade}>SUBMIT TRADE</button>
+        <button onClick={submitTrade}>
+          SUBMIT TRADE
+        </button>
       </section>
 
       <section className="panel">
-        <h2>Trade Queue <span className="count">{queue.length}</span></h2>
-        {queue.length === 0 && <p className="empty">No trades submitted yet.</p>}
+        <h2>
+          Trade Queue{" "}
+          <span className="count">{queue.length}</span>
+        </h2>
+
+        {queue.length === 0 && (
+          <p className="empty">No trades submitted yet.</p>
+        )}
+
         {queue.map((trade) => (
           <article className="trade" key={trade.id}>
-            <strong>{trade.team}</strong>
+            <strong>{trade.tiktok}</strong>
             <small>{trade.createdAt}</small>
-            <p><b>SENDS:</b> {trade.sending.join(", ")}</p>
-            <p><b>RECEIVES:</b> {trade.receiving.join(", ")}</p>
-            <button className="remove" onClick={() => removeTrade(trade.id)}>
+
+            <p>
+              <b>SENDS:</b> {trade.sending.join(", ")}
+            </p>
+
+            <p>
+              <b>RECEIVES:</b> {trade.receiving.join(", ")}
+            </p>
+
+            <button
+              className="remove"
+              onClick={() => removeTrade(trade.id)}
+            >
               Remove
             </button>
           </article>
         ))}
       </section>
-      <footer>XO FANTASY · TRADE SMART</footer>
+
+      <footer>ASKXO · TRADE SMART</footer>
     </main>
   );
 }
