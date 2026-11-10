@@ -28,12 +28,14 @@ type Submission = {
   give_players: Player[];
   get_players: Player[];
   players: Player[];
-  status: "pending" | "accepted" | "declined";
+  selected_players?: Player[];
+  comments?: string | null;
+  status: "pending" | "accepted" | "declined" | "picked";
   processed_at: string | null;
 };
 
 type DecisionPopup = {
-  status: "accepted" | "declined";
+  status: "accepted" | "declined" | "picked";
   submissionType: "trade" | "start_sit";
   username: string;
   number?: number;
@@ -75,6 +77,28 @@ function PlayerBar({ player }: { player: Player }) {
         <span>{player.position} · {player.team}</span>
       </div>
     </div>
+  );
+}
+
+function SelectablePlayer({
+  player,
+  selected,
+  onClick,
+}: {
+  player: Player;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`player-select-button ${selected ? "player-selected" : ""}`}
+      onClick={onClick}
+      aria-pressed={selected}
+    >
+      <span className="selection-check">{selected ? "✓" : "+"}</span>
+      <PlayerBar player={player} />
+    </button>
   );
 }
 
@@ -130,13 +154,11 @@ function playDecisionSound(
   }
 
   if (type === "accepted") {
-    // Cash-register-style cha-ching
     tone(880, now, 0.18, "sine", 0.45);
     tone(1175, now + 0.13, 0.22, "sine", 0.45);
     tone(1568, now + 0.29, 0.35, "triangle", 0.35);
     tone(2200, now + 0.31, 0.16, "sine", 0.16);
   } else {
-    // Separate lower-pitched decline sound
     tone(330, now, 0.24, "triangle", 0.35);
     tone(220, now + 0.2, 0.38, "sine", 0.3);
   }
@@ -161,16 +183,16 @@ export default function AdminPage() {
   const [muted, setMuted] = useState(false);
   const [volume, setVolume] = useState(80);
 
-  // Animation states
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
+
   const [incomingAnimationId, setIncomingAnimationId] = useState("");
   const [exitingId, setExitingId] = useState("");
   const [exitDecision, setExitDecision] = useState<
-    "accepted" | "declined" | ""
+    "accepted" | "declined" | "picked" | ""
   >("");
   const [decisionPopup, setDecisionPopup] =
     useState<DecisionPopup | null>(null);
 
-  // Track previous submissions so initial page load does not animate everything.
   const submissionsRef = useRef<Submission[]>([]);
   const hasLoadedSubmissions = useRef(false);
 
@@ -217,7 +239,6 @@ export default function AdminPage() {
 
     const nextRows = (data || []) as Submission[];
 
-    // Animate a newly arrived pending submission, but not the first page load.
     if (hasLoadedSubmissions.current) {
       const previousIds = new Set(
         submissionsRef.current.map((item) => item.id)
@@ -296,7 +317,6 @@ export default function AdminPage() {
     };
   }, [session, loadSubmissions]);
 
-  // Automatically dismiss the decision popup after a few seconds.
   useEffect(() => {
     if (!decisionPopup) return;
 
@@ -319,9 +339,7 @@ export default function AdminPage() {
       password,
     });
 
-    if (error) {
-      setLoginError(error.message);
-    }
+    if (error) setLoginError(error.message);
 
     setLoggingIn(false);
   }
@@ -350,6 +368,7 @@ export default function AdminPage() {
     setDecisionPopup(null);
     setIncomingAnimationId("");
     setExitingId("");
+    setSelectedPlayerIds([]);
 
     try {
       const { error } = await supabase.rpc("reset_askxo_submissions");
@@ -395,15 +414,12 @@ export default function AdminPage() {
 
     setProcessingId(item.id);
     setLoadError("");
-
-    // Animate the current submission away before updating the database.
     setExitingId(item.id);
     setExitDecision(status);
 
     try {
       await new Promise((resolve) => window.setTimeout(resolve, 580));
 
-      // Start or resume audio during the button interaction.
       if (typeof window !== "undefined" && "AudioContext" in window) {
         if (!decisionAudioContext) {
           decisionAudioContext = new AudioContext();
@@ -433,7 +449,6 @@ export default function AdminPage() {
         playDecisionSound(decisionAudioContext, status, volume);
       }
 
-      // Show the confirmation popup.
       setDecisionPopup({
         status,
         submissionType: item.submission_type,
@@ -441,7 +456,6 @@ export default function AdminPage() {
         number: item.submission_number,
       });
 
-      // The next pending item becomes current. Animate it into place.
       const nextSubmission = pending[1] ?? null;
 
       await loadSubmissions();
@@ -464,6 +478,95 @@ export default function AdminPage() {
     }
   }
 
+  async function submitStartSitPicks(item: Submission) {
+    if (!supabase || processingId || resetting) return;
+
+    if (selectedPlayerIds.length < 2 || selectedPlayerIds.length > 3) {
+      alert("Please select 2 or 3 players before submitting your picks.");
+      return;
+    }
+
+    const selectedPlayers = (item.players || []).filter((player, index) =>
+      selectedPlayerIds.includes(player.id || `player-${index}`)
+    );
+
+    if (selectedPlayers.length !== selectedPlayerIds.length) {
+      alert("There was a problem identifying your selected players. Please select them again.");
+      return;
+    }
+
+    setProcessingId(item.id);
+    setLoadError("");
+    setExitingId(item.id);
+    setExitDecision("picked");
+
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 580));
+
+      const { error } = await supabase
+        .from("submissions")
+        .update({
+          status: "picked",
+          selected_players: selectedPlayers,
+          processed_at: new Date().toISOString(),
+        })
+        .eq("id", item.id);
+
+      if (error) {
+        console.error("Start/Sit picks failed:", error);
+        setLoadError(`Couldn't save your picks: ${error.message}`);
+        alert(`Couldn't save your picks: ${error.message}`);
+        return;
+      }
+
+      setDecisionPopup({
+        status: "picked",
+        submissionType: "start_sit",
+        username: item.tiktok_username,
+        number: item.submission_number,
+      });
+
+      setSelectedPlayerIds([]);
+
+      const nextSubmission = pending[1] ?? null;
+
+      await loadSubmissions();
+
+      if (nextSubmission) {
+        triggerIncomingAnimation(nextSubmission.id);
+      }
+    } catch (error) {
+      console.error("Could not submit Start/Sit picks:", error);
+
+      const message =
+        error instanceof Error ? error.message : String(error);
+
+      setLoadError(`Something went wrong: ${message}`);
+      alert(`Something went wrong: ${message}`);
+    } finally {
+      setExitingId("");
+      setExitDecision("");
+      setProcessingId("");
+    }
+  }
+
+  function togglePlayerSelection(player: Player, index: number) {
+    const playerId = player.id || `player-${index}`;
+
+    setSelectedPlayerIds((current) => {
+      if (current.includes(playerId)) {
+        return current.filter((id) => id !== playerId);
+      }
+
+      if (current.length >= 3) {
+        alert("You can select a maximum of 3 players.");
+        return current;
+      }
+
+      return [...current, playerId];
+    });
+  }
+
   const pending = submissions
     .filter((item) => item.status === "pending")
     .sort(
@@ -482,6 +585,10 @@ export default function AdminPage() {
 
   const currentSubmission = pending[0] ?? null;
   const nextUp = pending.slice(1, 5);
+
+  useEffect(() => {
+    setSelectedPlayerIds([]);
+  }, [currentSubmission?.id]);
 
   if (!supabase) {
     return (
@@ -721,46 +828,94 @@ export default function AdminPage() {
                         </div>
                       ) : (
                         <div className="start-sit-area">
-                          <h3>PLAYERS TO COMPARE</h3>
+                          <h3>SELECT 2 OR 3 PLAYERS</h3>
+
+                          <p className="selection-instructions">
+                            Click the players you want to START. Selected players
+                            will turn green.
+                          </p>
 
                           {currentSubmission.players?.map(
-                            (player, index) => (
-                              <PlayerBar
-                                key={player.id || index}
-                                player={player}
-                              />
-                            )
+                            (player, index) => {
+                              const playerId =
+                                player.id || `player-${index}`;
+
+                              return (
+                                <SelectablePlayer
+                                  key={playerId}
+                                  player={player}
+                                  selected={selectedPlayerIds.includes(playerId)}
+                                  onClick={() =>
+                                    togglePlayerSelection(player, index)
+                                  }
+                                />
+                              );
+                            }
                           )}
+
+                          <div className="selection-count">
+                            {selectedPlayerIds.length} OF 2–3 SELECTED
+                          </div>
                         </div>
                       )}
 
-                      <div className="decision-buttons">
-                        <button
-                          type="button"
-                          disabled={!!processingId || resetting}
-                          onClick={() =>
-                            processSubmission(currentSubmission, "accepted")
-                          }
-                          className="accept-button"
-                        >
-                          {processingId === currentSubmission.id
-                            ? "PROCESSING..."
-                            : "✓ ACCEPT"}
-                        </button>
+                      {currentSubmission.comments?.trim() && (
+                        <div className="comment-box">
+                          <h3>VIEWER'S NOTES</h3>
+                          <p>{currentSubmission.comments}</p>
+                        </div>
+                      )}
 
-                        <button
-                          type="button"
-                          disabled={!!processingId || resetting}
-                          onClick={() =>
-                            processSubmission(currentSubmission, "declined")
-                          }
-                          className="decline-button"
-                        >
-                          {processingId === currentSubmission.id
-                            ? "PROCESSING..."
-                            : "✕ DECLINE"}
-                        </button>
-                      </div>
+                      {currentSubmission.submission_type === "trade" ? (
+                        <div className="decision-buttons">
+                          <button
+                            type="button"
+                            disabled={!!processingId || resetting}
+                            onClick={() =>
+                              processSubmission(currentSubmission, "accepted")
+                            }
+                            className="accept-button"
+                          >
+                            {processingId === currentSubmission.id
+                              ? "PROCESSING..."
+                              : "✓ ACCEPT"}
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={!!processingId || resetting}
+                            onClick={() =>
+                              processSubmission(currentSubmission, "declined")
+                            }
+                            className="decline-button"
+                          >
+                            {processingId === currentSubmission.id
+                              ? "PROCESSING..."
+                              : "✕ DECLINE"}
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="start-sit-submit-area">
+                          <button
+                            type="button"
+                            className="submit-picks-button"
+                            disabled={
+                              !!processingId ||
+                              resetting ||
+                              selectedPlayerIds.length < 2 ||
+                              selectedPlayerIds.length > 3
+                            }
+                            onClick={() =>
+                              submitStartSitPicks(currentSubmission)
+                            }
+                          >
+                            {processingId === currentSubmission.id
+                              ? "SUBMITTING..."
+                              : `★ SUBMIT PICKS (${selectedPlayerIds.length}/3)`}
+                          </button>
+                          <p>Choose 2 or 3 players to complete this question.</p>
+                        </div>
+                      )}
                     </div>
 
                     <SubmissionChip
@@ -818,7 +973,7 @@ export default function AdminPage() {
             {history.length === 0 ? (
               <div className="empty-table">
                 <h2>NO HISTORY YET</h2>
-                <p>Accepted and declined submissions will appear here.</p>
+                <p>Completed submissions will appear here.</p>
               </div>
             ) : (
               history.map((item) => (
@@ -842,10 +997,14 @@ export default function AdminPage() {
                         className={
                           item.status === "accepted"
                             ? "accepted-badge"
-                            : "declined-badge"
+                            : item.status === "declined"
+                              ? "declined-badge"
+                              : "picked-badge"
                         }
                       >
-                        {item.status.toUpperCase()}
+                        {item.status === "picked"
+                          ? "START ’EM"
+                          : item.status.toUpperCase()}
                       </span>
                     </div>
                   </div>
@@ -879,13 +1038,33 @@ export default function AdminPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="start-sit-area">
+                    <div className="start-sit-area history-players">
+                      <h3>PLAYERS SUBMITTED</h3>
                       {item.players?.map((player, index) => (
                         <PlayerBar
                           key={player.id || index}
                           player={player}
                         />
                       ))}
+
+                      {item.selected_players?.length ? (
+                        <div className="selected-history">
+                          <h3>★ START ’EM PICKS</h3>
+                          {item.selected_players.map((player, index) => (
+                            <div className="history-selected-player" key={player.id || index}>
+                              <span>✓</span>
+                              <PlayerBar player={player} />
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+
+                  {item.comments?.trim() && (
+                    <div className="comment-box history-comment">
+                      <h3>VIEWER'S NOTES</h3>
+                      <p>{item.comments}</p>
                     </div>
                   )}
                 </article>
@@ -909,7 +1088,11 @@ export default function AdminPage() {
             onClick={(e) => e.stopPropagation()}
           >
             <div className="popup-icon">
-              {decisionPopup.status === "accepted" ? "✓" : "✕"}
+              {decisionPopup.status === "accepted"
+                ? "✓"
+                : decisionPopup.status === "declined"
+                  ? "✕"
+                  : "★"}
             </div>
 
             <p className="popup-eyebrow">
@@ -917,8 +1100,9 @@ export default function AdminPage() {
             </p>
 
             <h2>
-              {decisionPopup.submissionType === "trade" ? "TRADE" : "QUESTION"}{" "}
-              {decisionPopup.status.toUpperCase()}!
+              {decisionPopup.status === "picked"
+                ? "START ’EM!"
+                : `${decisionPopup.submissionType === "trade" ? "TRADE" : "QUESTION"} ${decisionPopup.status.toUpperCase()}!`}
             </h2>
 
             <p className="popup-username">
@@ -990,9 +1174,7 @@ const styles = `
     text-shadow: 0 2px 8px rgba(0,0,0,.5);
   }
 
-  .brand span {
-    color: ${gold};
-  }
+  .brand span { color: ${gold}; }
 
   .eyebrow {
     color: #c9b98f;
@@ -1084,9 +1266,7 @@ const styles = `
     box-shadow: 0 0 10px #78d28d;
   }
 
-  .status-divider {
-    color: #8d7950;
-  }
+  .status-divider { color: #8d7950; }
 
   .view-tabs {
     display: flex;
@@ -1117,9 +1297,7 @@ const styles = `
     box-shadow: 0 0 13px rgba(232,199,125,.2);
   }
 
-  .refresh-tab {
-    margin-left: 10px;
-  }
+  .refresh-tab { margin-left: 10px; }
 
   .main-table-area {
     flex: 1;
@@ -1151,9 +1329,7 @@ const styles = `
     background: linear-gradient(90deg, transparent, #d4b46d);
   }
 
-  .gold-line:last-child {
-    transform: rotate(180deg);
-  }
+  .gold-line:last-child { transform: rotate(180deg); }
 
   .current-submission {
     display: grid;
@@ -1170,99 +1346,51 @@ const styles = `
     border: 1px solid rgba(226,195,128,.55);
     border-radius: 20px;
     background: linear-gradient(145deg, rgba(8,26,18,.82), rgba(15,48,33,.82));
-    box-shadow:
-      inset 0 1px 0 rgba(255,255,255,.07),
-      0 12px 30px rgba(0,0,0,.24);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 12px 30px rgba(0,0,0,.24);
     transform-origin: center;
     will-change: transform, opacity;
   }
 
-  /* Incoming submission animation */
   .submission-enter {
     animation: submissionEnter .75s cubic-bezier(.2,.8,.2,1) both;
   }
 
-  /* Accepted submissions swipe out to the right */
-  .submission-exit-accepted {
+  .submission-exit-accepted,
+  .submission-exit-picked {
     animation: submissionSwipeOutRight .58s ease-in forwards;
     pointer-events: none;
   }
 
-  /* Declined submissions swipe out to the left */
   .submission-exit-declined {
     animation: submissionSwipeOutLeft .58s ease-in forwards;
     pointer-events: none;
   }
 
   @keyframes submissionEnter {
-    0% {
-      opacity: 0;
-      transform: translateY(35px) scale(.94);
-      filter: blur(4px);
-    }
-    70% {
-      opacity: 1;
-      transform: translateY(-3px) scale(1.01);
-      filter: blur(0);
-    }
-    100% {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-      filter: blur(0);
-    }
+    0% { opacity: 0; transform: translateY(35px) scale(.94); filter: blur(4px); }
+    70% { opacity: 1; transform: translateY(-3px) scale(1.01); filter: blur(0); }
+    100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
   }
 
   @keyframes submissionSwipeOutRight {
-    0% {
-      opacity: 1;
-      transform: translateX(0) rotate(0) scale(1);
-    }
-    100% {
-      opacity: 0;
-      transform: translateX(115%) rotate(5deg) scale(.9);
-      filter: blur(3px);
-    }
+    0% { opacity: 1; transform: translateX(0) rotate(0) scale(1); }
+    100% { opacity: 0; transform: translateX(115%) rotate(5deg) scale(.9); filter: blur(3px); }
   }
 
   @keyframes submissionSwipeOutLeft {
-    0% {
-      opacity: 1;
-      transform: translateX(0) rotate(0) scale(1);
-    }
-    100% {
-      opacity: 0;
-      transform: translateX(-115%) rotate(-5deg) scale(.9);
-      filter: blur(3px);
-    }
+    0% { opacity: 1; transform: translateX(0) rotate(0) scale(1); }
+    100% { opacity: 0; transform: translateX(-115%) rotate(-5deg) scale(.9); filter: blur(3px); }
   }
 
-  /* A new name briefly highlights in the Next Up queue */
-  .queue-entry {
-    animation: queueEntry .9s ease-out both;
-  }
+  .queue-entry { animation: queueEntry .9s ease-out both; }
 
   @keyframes queueEntry {
-    0% {
-      opacity: 0;
-      transform: translateY(12px) scale(.94);
-      background: rgba(232,199,125,.55);
-      color: #17140e;
-    }
-    55% {
-      opacity: 1;
-      transform: translateY(-2px) scale(1.02);
-      background: rgba(232,199,125,.28);
-      color: #fff3d7;
-    }
-    100% {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-    }
+    0% { opacity: 0; transform: translateY(12px) scale(.94); background: rgba(232,199,125,.55); color: #17140e; }
+    55% { opacity: 1; transform: translateY(-2px) scale(1.02); background: rgba(232,199,125,.28); color: #fff3d7; }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
   }
 
-  .submission-content {
-    min-width: 0;
-  }
+  .submission-content { min-width: 0; }
 
   .submission-topline,
   .history-top {
@@ -1288,7 +1416,8 @@ const styles = `
 
   .pending-badge,
   .accepted-badge,
-  .declined-badge {
+  .declined-badge,
+  .picked-badge {
     padding: 7px 12px;
     border: 1px solid #d3b16b;
     border-radius: 30px;
@@ -1331,18 +1460,14 @@ const styles = `
     border: 1px solid rgba(187,105,89,.55);
   }
 
-  .give-side h3 {
-    color: #e7a49a;
-  }
+  .give-side h3 { color: #e7a49a; }
 
   .get-side {
     background: rgba(24,67,43,.55);
     border: 1px solid rgba(113,175,123,.55);
   }
 
-  .get-side h3 {
-    color: #a4e1ad;
-  }
+  .get-side h3 { color: #a4e1ad; }
 
   .player-bar {
     display: flex;
@@ -1374,9 +1499,7 @@ const styles = `
     font-weight: 900;
   }
 
-  .player-info {
-    min-width: 0;
-  }
+  .player-info { min-width: 0; }
 
   .player-info strong {
     display: block;
@@ -1407,8 +1530,128 @@ const styles = `
     background: rgba(0,0,0,.2);
   }
 
-  .start-sit-area h3 {
+  .start-sit-area h3 { color: #e8c77d; }
+
+  .selection-instructions {
+    color: #c5d5c8;
+    font-size: 11px;
+    margin: 4px 0 10px;
+  }
+
+  .player-select-button {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 4px;
+    margin: 5px 0;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 9px;
+    background: rgba(0,0,0,.24);
+    color: white;
+    text-align: left;
+    cursor: pointer;
+    transition: background .18s, border-color .18s, transform .18s;
+  }
+
+  .player-select-button .player-bar {
+    flex: 1;
+    margin: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .player-select-button:hover {
+    border-color: #e8c77d;
+    transform: translateY(-1px);
+  }
+
+  .selection-check {
+    display: grid;
+    place-items: center;
+    width: 25px;
+    height: 25px;
+    flex-shrink: 0;
+    border: 1px solid #8b9b8d;
+    border-radius: 50%;
+    color: #d9e5db;
+    font-weight: 900;
+  }
+
+  .player-selected {
+    background: rgba(41,145,76,.35);
+    border: 2px solid #72d28c;
+    box-shadow: 0 0 12px rgba(91,220,126,.2);
+  }
+
+  .player-selected .selection-check {
+    color: #092313;
+    background: #8ce5a1;
+    border-color: #8ce5a1;
+  }
+
+  .selection-count {
+    margin-top: 10px;
+    color: #a4e1ad;
+    font-size: 11px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    text-align: center;
+  }
+
+  .start-sit-submit-area {
+    margin-top: 12px;
+    text-align: center;
+  }
+
+  .submit-picks-button {
+    width: 100%;
+    padding: 14px;
+    border: 1px solid #8ac69b;
+    border-radius: 9px;
+    color: #082113;
+    background: linear-gradient(135deg, #a8edb5, #4caa6a);
+    font-size: 13px;
+    font-weight: 900;
+    letter-spacing: 2px;
+    cursor: pointer;
+    box-shadow: 0 4px 15px rgba(0,0,0,.25);
+  }
+
+  .submit-picks-button:disabled {
+    background: #56695b;
+    border-color: #718276;
+    color: #c5d0c7;
+  }
+
+  .start-sit-submit-area p {
+    color: #b7c8bb;
+    font-size: 10px;
+    margin: 7px 0 0;
+  }
+
+  .comment-box {
+    margin-top: 12px;
+    padding: 11px 13px;
+    border: 1px solid rgba(232,199,125,.4);
+    border-radius: 10px;
+    background: rgba(0,0,0,.28);
+  }
+
+  .comment-box h3 {
     color: #e8c77d;
+    font-size: 10px;
+    letter-spacing: 2px;
+    margin: 0 0 6px;
+  }
+
+  .comment-box p {
+    color: #eee6d5;
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 0;
   }
 
   .decision-buttons {
@@ -1453,17 +1696,8 @@ const styles = `
     place-items: center;
     border-radius: 50%;
     padding: 13px;
-    background:
-      repeating-conic-gradient(
-        from 0deg,
-        #e7d29d 0deg 9deg,
-        #76572c 9deg 13deg,
-        #e7d29d 13deg 22deg
-      );
-    box-shadow:
-      0 12px 28px rgba(0,0,0,.6),
-      inset 0 0 0 3px #f4dfaa,
-      inset 0 0 0 7px #6b512e;
+    background: repeating-conic-gradient(from 0deg, #e7d29d 0deg 9deg, #76572c 9deg 13deg, #e7d29d 13deg 22deg);
+    box-shadow: 0 12px 28px rgba(0,0,0,.6), inset 0 0 0 3px #f4dfaa, inset 0 0 0 7px #6b512e;
   }
 
   .chip-inner {
@@ -1635,12 +1869,55 @@ const styles = `
     border-color: #a65e53;
   }
 
+  .picked-badge {
+    color: #a4e1ad;
+    border-color: #72d28c;
+    background: rgba(41,145,76,.2);
+  }
+
   .history-type {
     color: #e8c77d;
     font-size: 11px;
     letter-spacing: 2px;
     margin: 12px 0 8px;
   }
+
+  .history-players {
+    max-width: none;
+  }
+
+  .selected-history {
+    margin-top: 14px;
+    padding: 12px;
+    border: 1px solid #72d28c;
+    border-radius: 10px;
+    background: rgba(41,145,76,.16);
+  }
+
+  .selected-history h3 {
+    color: #a4e1ad;
+    margin-bottom: 10px;
+  }
+
+  .history-selected-player {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #a4e1ad;
+  }
+
+  .history-selected-player > span {
+    font-size: 18px;
+    font-weight: 900;
+  }
+
+  .history-selected-player .player-bar {
+    flex: 1;
+    border-color: rgba(114,210,140,.4);
+    background: rgba(0,0,0,.25);
+  }
+
+  .history-comment { margin-top: 12px; }
 
   .table-footer {
     flex-shrink: 0;
@@ -1668,7 +1945,6 @@ const styles = `
     overflow-wrap: anywhere;
   }
 
-  /* Accept / decline confirmation popup */
   .decision-popup-backdrop {
     position: fixed;
     inset: 0;
@@ -1688,24 +1964,23 @@ const styles = `
     border-radius: 22px;
     background: linear-gradient(145deg, #17271e, #09140e);
     border: 2px solid #e8c77d;
-    box-shadow:
-      0 25px 80px rgba(0,0,0,.7),
-      0 0 30px rgba(232,199,125,.2);
+    box-shadow: 0 25px 80px rgba(0,0,0,.7), 0 0 30px rgba(232,199,125,.2);
     animation: popupPop .32s cubic-bezier(.2,.8,.2,1) both;
   }
 
   .decision-popup.accepted {
     border-color: #8ac69b;
-    box-shadow:
-      0 25px 80px rgba(0,0,0,.7),
-      0 0 32px rgba(100,205,130,.2);
+    box-shadow: 0 25px 80px rgba(0,0,0,.7), 0 0 32px rgba(100,205,130,.2);
   }
 
   .decision-popup.declined {
     border-color: #c98275;
-    box-shadow:
-      0 25px 80px rgba(0,0,0,.7),
-      0 0 32px rgba(205,100,90,.2);
+    box-shadow: 0 25px 80px rgba(0,0,0,.7), 0 0 32px rgba(205,100,90,.2);
+  }
+
+  .decision-popup.picked {
+    border-color: #72d28c;
+    box-shadow: 0 25px 80px rgba(0,0,0,.7), 0 0 38px rgba(91,220,126,.3);
   }
 
   .popup-icon {
@@ -1734,6 +2009,12 @@ const styles = `
     background: rgba(205,100,90,.1);
   }
 
+  .picked .popup-icon {
+    border-color: #72d28c;
+    color: #a4e1ad;
+    background: rgba(91,220,126,.12);
+  }
+
   .popup-eyebrow {
     color: #c9b98f;
     font-size: 10px;
@@ -1748,13 +2029,12 @@ const styles = `
     margin: 13px 0;
   }
 
-  .decision-popup.accepted h2 {
+  .decision-popup.accepted h2,
+  .decision-popup.picked h2 {
     color: #a4e1ad;
   }
 
-  .decision-popup.declined h2 {
-    color: #e7a49a;
-  }
+  .decision-popup.declined h2 { color: #e7a49a; }
 
   .popup-username {
     color: #eee5d2;
@@ -1780,18 +2060,9 @@ const styles = `
   }
 
   @keyframes popupPop {
-    0% {
-      opacity: 0;
-      transform: translateY(20px) scale(.88);
-    }
-    75% {
-      opacity: 1;
-      transform: translateY(-3px) scale(1.02);
-    }
-    100% {
-      opacity: 1;
-      transform: translateY(0) scale(1);
-    }
+    0% { opacity: 0; transform: translateY(20px) scale(.88); }
+    75% { opacity: 1; transform: translateY(-3px) scale(1.02); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
   }
 
   .login-page {
@@ -1864,56 +2135,18 @@ const styles = `
   }
 
   @media (max-height: 800px) {
-    .casino-table {
-      padding-top: 12px;
-      padding-bottom: 8px;
-    }
-
-    .brand {
-      font-size: 30px;
-    }
-
-    .top-bar {
-      padding-bottom: 8px;
-    }
-
-    .table-status {
-      padding-top: 6px;
-    }
-
-    .view-tabs {
-      margin-bottom: 5px;
-    }
-
-    .current-heading {
-      margin: 3px 0 7px;
-    }
-
-    .username {
-      font-size: 18px;
-    }
-
-    .question-title {
-      margin: 9px 0 7px;
-    }
-
-    .queue-section {
-      margin-top: 6px;
-      padding: 7px;
-    }
-
-    .queue-name,
-    .queue-label {
-      min-height: 38px;
-    }
-
-    .queue-note {
-      margin-top: 4px;
-    }
-
-    .table-footer {
-      padding-top: 6px;
-    }
+    .casino-table { padding-top: 12px; padding-bottom: 8px; }
+    .brand { font-size: 30px; }
+    .top-bar { padding-bottom: 8px; }
+    .table-status { padding-top: 6px; }
+    .view-tabs { margin-bottom: 5px; }
+    .current-heading { margin: 3px 0 7px; }
+    .username { font-size: 18px; }
+    .question-title { margin: 9px 0 7px; }
+    .queue-section { margin-top: 6px; padding: 7px; }
+    .queue-name, .queue-label { min-height: 38px; }
+    .queue-note { margin-top: 4px; }
+    .table-footer { padding-top: 6px; }
   }
 
   @media (max-width: 800px) {
@@ -1923,9 +2156,7 @@ const styles = `
       border-radius: 22px;
     }
 
-    .top-bar {
-      gap: 10px;
-    }
+    .top-bar { gap: 10px; }
 
     .top-controls {
       justify-content: flex-start;
@@ -1937,80 +2168,43 @@ const styles = `
       overflow-y: auto;
     }
 
-    .chip-wrap {
-      grid-row: 1;
-    }
-
-    .chip {
-      width: 100px;
-      height: 100px;
-    }
-
-    .chip-number {
-      font-size: 25px;
-    }
-
-    .trade-grid {
-      grid-template-columns: 1fr;
-    }
-
-    .main-table-area {
-      overflow-y: auto;
-    }
+    .chip-wrap { grid-row: 1; }
+    .chip { width: 100px; height: 100px; }
+    .chip-number { font-size: 25px; }
+    .trade-grid { grid-template-columns: 1fr; }
+    .main-table-area { overflow-y: auto; }
   }
 
   @media (max-width: 560px) {
-    .top-controls {
-      gap: 6px;
-    }
+    .top-controls { gap: 6px; }
 
-    .sound-control {
-      flex-wrap: wrap;
-    }
+    .sound-control { flex-wrap: wrap; }
 
     .queue-section {
       grid-template-columns: 1fr 1fr;
       gap: 6px;
     }
 
-    .queue-label {
-      grid-column: 1 / -1;
-    }
-
-    .queue-name {
-      min-height: 36px;
-    }
-
-    .decision-buttons {
-      flex-direction: column;
-    }
-
-    .current-submission {
-      padding: 10px;
-    }
+    .queue-label { grid-column: 1 / -1; }
+    .queue-name { min-height: 36px; }
+    .decision-buttons { flex-direction: column; }
+    .current-submission { padding: 10px; }
 
     .table-status {
       font-size: 9px;
       letter-spacing: 1px;
     }
 
-    .refresh-tab {
-      margin-left: 0;
-    }
-
-    .brand {
-      font-size: 25px;
-    }
-
-    .eyebrow {
-      letter-spacing: 2px;
-    }
+    .refresh-tab { margin-left: 0; }
+    .brand { font-size: 25px; }
+    .eyebrow { letter-spacing: 2px; }
   }
 
   @media (prefers-reduced-motion: reduce) {
     .submission-enter,
     .submission-exit-accepted,
     .submission-exit-declined,
+    .submission-exit-picked,
     .queue-entry,
     .decision-popup-backdrop,
     .decision-popup {
