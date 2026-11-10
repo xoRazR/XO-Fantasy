@@ -88,9 +88,10 @@ export default function AdminPage() {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [processingId, setProcessingId] = useState("");
+  const [resetting, setResetting] = useState(false);
   const [view, setView] = useState<"pending" | "history">("pending");
 
-  // Real cash-register sound for accepted submissions
+  // Cash-register sound for accepted submissions
   function playCashSound() {
     const sound = new Audio("/sounds/cash-register.mp3");
     sound.volume = 0.8;
@@ -196,6 +197,45 @@ export default function AdminPage() {
     await supabase.auth.signOut();
     setSubmissions([]);
     setPassword("");
+  }
+
+  // Permanently clear Pending and History and restart numbering at #1
+  async function resetQueue() {
+    if (!supabase || resetting || processingId) return;
+
+    const confirmed = window.confirm(
+      "RESET STREAM?\n\nThis will permanently delete ALL submissions from Pending and History and restart numbering at #1.\n\nThis cannot be undone."
+    );
+
+    if (!confirmed) return;
+
+    setResetting(true);
+    setLoadError("");
+
+    const { error } = await supabase.rpc(
+      "reset_askxo_submissions"
+    );
+
+    if (error) {
+      console.error("Stream reset failed:", error);
+      setLoadError(
+        "Reset failed. Please check that the Supabase reset function has been created."
+      );
+      alert("Reset failed. Your submissions have not been cleared.");
+      setResetting(false);
+      return;
+    }
+
+    setSubmissions([]);
+    setView("pending");
+    setLoadError("");
+    setResetting(false);
+
+    alert(
+      "STREAM RESET SUCCESSFUL!\n\nPending and History are now empty. Your next submission will be #1."
+    );
+
+    await loadSubmissions();
   }
 
   async function processSubmission(
@@ -500,14 +540,30 @@ export default function AdminPage() {
 
           <button
             onClick={loadSubmissions}
+            disabled={loading || resetting}
             style={{
               ...buttonStyle,
               background: "#292929",
               color: "white",
-              marginLeft: "auto"
+              marginLeft: "auto",
+              opacity: loading || resetting ? 0.5 : 1
             }}
           >
             ↻ REFRESH
+          </button>
+
+          <button
+            onClick={resetQueue}
+            disabled={resetting || loading || !!processingId}
+            style={{
+              ...buttonStyle,
+              background: "#782929",
+              color: "white",
+              border: "1px solid #a34a4a",
+              opacity: resetting || loading || !!processingId ? 0.5 : 1
+            }}
+          >
+            {resetting ? "RESETTING..." : "RESET STREAM"}
           </button>
         </div>
 
@@ -574,6 +630,16 @@ export default function AdminPage() {
                 }}>
                   {new Date(item.created_at).toLocaleString()}
                 </p>
+                {item.submission_number != null && (
+                  <p style={{
+                    color: gold,
+                    fontSize: 12,
+                    fontWeight: 800,
+                    margin: "5px 0"
+                  }}>
+                    SUBMISSION #{item.submission_number}
+                  </p>
+                )}
               </div>
 
               <span style={{
@@ -674,7 +740,7 @@ export default function AdminPage() {
                 marginTop: 22
               }}>
                 <button
-                  disabled={processingId === item.id}
+                  disabled={processingId === item.id || resetting}
                   onClick={() => processSubmission(item, "accepted")}
                   style={{
                     ...buttonStyle,
@@ -688,7 +754,7 @@ export default function AdminPage() {
                 </button>
 
                 <button
-                  disabled={processingId === item.id}
+                  disabled={processingId === item.id || resetting}
                   onClick={() => processSubmission(item, "declined")}
                   style={{
                     ...buttonStyle,
