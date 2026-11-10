@@ -15,6 +15,7 @@ type Player = {
 type Submission = {
   id: string;
   created_at: string;
+  submission_number?: number;
   tiktok_username: string;
   submission_type: "trade" | "start_sit";
   give_players: Player[];
@@ -88,6 +89,15 @@ export default function AdminPage() {
   const [loadError, setLoadError] = useState("");
   const [processingId, setProcessingId] = useState("");
   const [view, setView] = useState<"pending" | "history">("pending");
+
+  // Real cash-register sound for accepted submissions
+  function playCashSound() {
+    const sound = new Audio("/sounds/cash-register.mp3");
+    sound.volume = 0.8;
+    void sound.play().catch((error) => {
+      console.warn("Could not play cash-register sound:", error);
+    });
+  }
 
   const loadSubmissions = useCallback(async () => {
     if (!supabase) return;
@@ -208,6 +218,10 @@ export default function AdminPage() {
       console.error(error);
       alert("Couldn't update this submission. Please try again.");
     } else {
+      if (status === "accepted") {
+        playCashSound();
+      }
+
       await loadSubmissions();
     }
 
