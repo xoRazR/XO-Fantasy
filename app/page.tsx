@@ -3,11 +3,15 @@
 
 import { useEffect, useState } from "react";
 
-type Trade = {
+type QuestionType = "Trade" | "Start/Sit";
+
+type Submission = {
   id: string;
   tiktok: string;
+  type: QuestionType;
   sending: string[];
   receiving: string[];
+  players: string[];
   createdAt: string;
 };
 
@@ -35,55 +39,141 @@ const players = [
 ];
 
 export default function Home() {
+  const [step, setStep] = useState(1);
   const [tiktok, setTiktok] = useState("");
-  const [sending, setSending] = useState(["", ""]);
-  const [receiving, setReceiving] = useState(["", ""]);
-  const [queue, setQueue] = useState<Trade[]>([]);
+  const [type, setType] = useState<QuestionType | null>(null);
+
+  const [sending, setSending] = useState<string[]>([""]);
+  const [receiving, setReceiving] = useState<string[]>([""]);
+  const [startSit, setStartSit] = useState<string[]>(["", ""]);
+
+  const [queue, setQueue] = useState<Submission[]>([]);
 
   useEffect(() => {
     try {
-      setQueue(JSON.parse(localStorage.getItem("xo-trades") || "[]"));
+      const saved = JSON.parse(
+        localStorage.getItem("xo-trades") || "[]"
+      );
+
+      setQueue(
+        saved.map((item: any) => ({
+          id: item.id,
+          tiktok: item.tiktok || item.team || "@unknown",
+          type: item.type || "Trade",
+          sending: item.sending || [],
+          receiving: item.receiving || [],
+          players: item.players || [],
+          createdAt: item.createdAt || ""
+        }))
+      );
     } catch {
       setQueue([]);
     }
   }, []);
 
-  function submitTrade() {
-    if (!tiktok.trim() || !sending[0] || !receiving[0]) {
-      alert("Enter your TikTok @ and select at least one player on each side.");
+  function saveQueue(updated: Submission[]) {
+    setQueue(updated);
+    localStorage.setItem("xo-trades", JSON.stringify(updated));
+  }
+
+  function addPlayer(
+    list: string[],
+    setter: (value: string[]) => void,
+    max: number
+  ) {
+    if (list.length < max) setter([...list, ""]);
+  }
+
+  function updatePlayer(
+    list: string[],
+    setter: (value: string[]) => void,
+    index: number,
+    value: string
+  ) {
+    setter(list.map((player, i) => i === index ? value : player));
+  }
+
+  function removePlayer(
+    list: string[],
+    setter: (value: string[]) => void,
+    index: number
+  ) {
+    if (list.length > 1) {
+      setter(list.filter((_, i) => i !== index));
+    }
+  }
+
+  function chooseQuestion(question: QuestionType) {
+    setType(question);
+    setStep(2);
+  }
+
+  function submitQuestion() {
+    if (!tiktok.trim()) {
+      alert("Please enter your TikTok username.");
       return;
     }
 
-    const username = tiktok.trim().startsWith("@")
-      ? tiktok.trim()
-      : "@" + tiktok.trim();
+    if (type === "Trade") {
+      const send = sending.filter(Boolean);
+      const receive = receiving.filter(Boolean);
 
-    const trade: Trade = {
-      id: crypto.randomUUID(),
-      tiktok: username,
-      sending: sending.filter(Boolean),
-      receiving: receiving.filter(Boolean),
-      createdAt: new Date().toLocaleTimeString()
-    };
+      if (!send.length || !receive.length) {
+        alert("Choose at least one player on each side.");
+        return;
+      }
 
-    const updated = [trade, ...queue];
-    setQueue(updated);
-    localStorage.setItem("xo-trades", JSON.stringify(updated));
+      const submission: Submission = {
+        id: crypto.randomUUID(),
+        tiktok: tiktok.trim().startsWith("@")
+          ? tiktok.trim()
+          : "@" + tiktok.trim(),
+        type: "Trade",
+        sending: send,
+        receiving: receive,
+        players: [],
+        createdAt: new Date().toLocaleTimeString()
+      };
 
+      saveQueue([submission, ...queue]);
+    } else {
+      const selected = startSit.filter(Boolean);
+
+      if (selected.length < 2) {
+        alert("Choose at least two players to compare.");
+        return;
+      }
+
+      const submission: Submission = {
+        id: crypto.randomUUID(),
+        tiktok: tiktok.trim().startsWith("@")
+          ? tiktok.trim()
+          : "@" + tiktok.trim(),
+        type: "Start/Sit",
+        sending: [],
+        receiving: [],
+        players: selected,
+        createdAt: new Date().toLocaleTimeString()
+      };
+
+      saveQueue([submission, ...queue]);
+    }
+
+    alert("Your question has been submitted!");
+
+    setStep(1);
     setTiktok("");
-    setSending(["", ""]);
-    setReceiving(["", ""]);
-
-    alert("Your trade has been submitted!");
+    setType(null);
+    setSending([""]);
+    setReceiving([""]);
+    setStartSit(["", ""]);
   }
 
   function removeTrade(id: string) {
-    const updated = queue.filter((trade) => trade.id !== id);
-    setQueue(updated);
-    localStorage.setItem("xo-trades", JSON.stringify(updated));
+    saveQueue(queue.filter((item) => item.id !== id));
   }
 
-  function playerSelect(
+  function playerDropdown(
     value: string,
     onChange: (value: string) => void
   ) {
@@ -102,80 +192,229 @@ export default function Home() {
     );
   }
 
+  const addButtonStyle = {
+    background: "#292929",
+    color: "#e8b84d",
+    border: "1px solid #555",
+    padding: "11px",
+    marginTop: "5px"
+  };
+
+  const backButtonStyle = {
+    background: "#292929",
+    color: "white",
+    marginBottom: "20px"
+  };
+
   return (
     <main>
       <header>
         <h1>ASK<span>XO</span></h1>
-        <p>THE FANTASY TRADE CENTER</p>
+        <p>THE FANTASY QUESTION CENTER</p>
       </header>
 
-      <section className="panel">
-        <h2>Submit Your Trade</h2>
+      {step === 1 && (
+        <section className="panel">
+          <h2>Welcome to ASKXO</h2>
 
-        <label>YOUR EXACT TIKTOK @</label>
-        <input
-          value={tiktok}
-          onChange={(e) => setTiktok(e.target.value)}
-          placeholder="@yourtiktokusername"
-        />
+          <label>YOUR EXACT TIKTOK @</label>
+          <input
+            value={tiktok}
+            onChange={(e) => setTiktok(e.target.value)}
+            placeholder="@yourtiktokusername"
+          />
 
-        <div className="trade-grid">
-          <div>
-            <h3>YOU SEND</h3>
-            {playerSelect(
-              sending[0],
-              (v) => setSending([v, sending[1]])
-            )}
-            {playerSelect(
-              sending[1],
-              (v) => setSending([sending[0], v])
-            )}
-          </div>
+          <h3>WHAT ARE YOU ASKING?</h3>
 
-          <div>
-            <h3>YOU RECEIVE</h3>
-            {playerSelect(
-              receiving[0],
-              (v) => setReceiving([v, receiving[1]])
-            )}
-            {playerSelect(
-              receiving[1],
-              (v) => setReceiving([receiving[0], v])
-            )}
-          </div>
-        </div>
+          <button
+            onClick={() => chooseQuestion("Trade")}
+            style={{ marginBottom: "14px" }}
+          >
+            ↔ TRADE QUESTION
+          </button>
 
-        <button onClick={submitTrade}>
-          SUBMIT TRADE
-        </button>
-      </section>
+          <button
+            onClick={() => chooseQuestion("Start/Sit")}
+          >
+            ★ START / SIT QUESTION
+          </button>
+        </section>
+      )}
+
+      {step === 2 && type === "Trade" && (
+        <section className="panel">
+          <button
+            style={backButtonStyle}
+            onClick={() => setStep(1)}
+          >
+            ← BACK
+          </button>
+
+          <h2>Submit Your Trade</h2>
+          <p>Choose up to 4 players on each side.</p>
+
+          <h3>YOU SEND</h3>
+
+          {sending.map((player, index) => (
+            <div key={index}>
+              {playerDropdown(
+                player,
+                (value) => updatePlayer(
+                  sending, setSending, index, value
+                )
+              )}
+              {sending.length > 1 && (
+                <button
+                  style={addButtonStyle}
+                  onClick={() => removePlayer(
+                    sending, setSending, index
+                  )}
+                >
+                  Remove player
+                </button>
+              )}
+            </div>
+          ))}
+
+          {sending.length < 4 && (
+            <button
+              style={addButtonStyle}
+              onClick={() => addPlayer(
+                sending, setSending, 4
+              )}
+            >
+              + ADD PLAYER
+            </button>
+          )}
+
+          <h3>YOU RECEIVE</h3>
+
+          {receiving.map((player, index) => (
+            <div key={index}>
+              {playerDropdown(
+                player,
+                (value) => updatePlayer(
+                  receiving, setReceiving, index, value
+                )
+              )}
+              {receiving.length > 1 && (
+                <button
+                  style={addButtonStyle}
+                  onClick={() => removePlayer(
+                    receiving, setReceiving, index
+                  )}
+                >
+                  Remove player
+                </button>
+              )}
+            </div>
+          ))}
+
+          {receiving.length < 4 && (
+            <button
+              style={addButtonStyle}
+              onClick={() => addPlayer(
+                receiving, setReceiving, 4
+              )}
+            >
+              + ADD PLAYER
+            </button>
+          )}
+
+          <button
+            style={{ marginTop: "22px" }}
+            onClick={submitQuestion}
+          >
+            SUBMIT TRADE QUESTION
+          </button>
+        </section>
+      )}
+
+      {step === 2 && type === "Start/Sit" && (
+        <section className="panel">
+          <button
+            style={backButtonStyle}
+            onClick={() => setStep(1)}
+          >
+            ← BACK
+          </button>
+
+          <h2>Start / Sit Question</h2>
+          <p>Choose 2 or 3 players you need help deciding between.</p>
+
+          <h3>YOUR PLAYERS</h3>
+
+          {startSit.map((player, index) => (
+            <div key={index}>
+              {playerDropdown(
+                player,
+                (value) => updatePlayer(
+                  startSit, setStartSit, index, value
+                )
+              )}
+
+              {startSit.length > 2 && (
+                <button
+                  style={addButtonStyle}
+                  onClick={() => removePlayer(
+                    startSit, setStartSit, index
+                  )}
+                >
+                  Remove player
+                </button>
+              )}
+            </div>
+          ))}
+
+          {startSit.length < 3 && (
+            <button
+              style={addButtonStyle}
+              onClick={() => addPlayer(
+                startSit, setStartSit, 3
+              )}
+            >
+              + ADD PLAYER
+            </button>
+          )}
+
+          <button
+            style={{ marginTop: "22px" }}
+            onClick={submitQuestion}
+          >
+            SUBMIT START / SIT QUESTION
+          </button>
+        </section>
+      )}
 
       <section className="panel">
         <h2>
-          Trade Queue{" "}
+          Submission Queue{" "}
           <span className="count">{queue.length}</span>
         </h2>
 
         {queue.length === 0 && (
-          <p className="empty">No trades submitted yet.</p>
+          <p className="empty">No questions submitted yet.</p>
         )}
 
-        {queue.map((trade) => (
-          <article className="trade" key={trade.id}>
-            <strong>{trade.tiktok}</strong>
-            <small>{trade.createdAt}</small>
+        {queue.map((item) => (
+          <article className="trade" key={item.id}>
+            <strong>{item.tiktok}</strong>
+            <small>{item.createdAt}</small>
 
-            <p>
-              <b>SENDS:</b> {trade.sending.join(", ")}
-            </p>
+            <h3>{item.type.toUpperCase()}</h3>
 
-            <p>
-              <b>RECEIVES:</b> {trade.receiving.join(", ")}
-            </p>
+            {item.type === "Trade" ? (
+              <>
+                <p><b>SENDS:</b> {item.sending.join(", ")}</p>
+                <p><b>RECEIVES:</b> {item.receiving.join(", ")}</p>
+              </>
+            ) : (
+              <p><b>PLAYERS:</b> {item.players.join(", ")}</p>
+            )}
 
             <button
               className="remove"
-              onClick={() => removeTrade(trade.id)}
+              onClick={() => removeTrade(item.id)}
             >
               Remove
             </button>
@@ -183,7 +422,7 @@ export default function Home() {
         ))}
       </section>
 
-      <footer>ASKXO · TRADE SMART</footer>
+      <footer>ASKXO · YOUR FANTASY QUESTIONS ANSWERED</footer>
     </main>
   );
 }
