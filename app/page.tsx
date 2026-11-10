@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 type Player = {
   id: string;
@@ -11,198 +11,241 @@ type Player = {
   imageUrl: string;
 };
 
+type QuestionType = "Trade" | "Start/Sit";
+
 type Submission = {
   id: string;
-  username: string;
-  type: "Trade" | "Start/Sit";
-  giving: Player[];
-  receiving: Player[];
-  players: Player[];
+  tiktok: string;
+  type: QuestionType;
+  sending: string[];
+  receiving: string[];
+  players: string[];
   createdAt: string;
 };
 
-const STORAGE_KEY = "xo-trades";
+type PlayerPickerProps = {
+  label: string;
+  players: Player[];
+  value: string;
+  excludedIds: string[];
+  onChange: (id: string) => void;
+};
 
 function PlayerPicker({
   label,
-  selected,
-  onSelect,
-  onRemove,
   players,
+  value,
   excludedIds,
-  max,
-}: {
-  label: string;
-  selected: Player[];
-  onSelect: (player: Player) => void;
-  onRemove: (id: string) => void;
-  players: Player[];
-  excludedIds: string[];
-  max: number;
-}) {
-  const [search, setSearch] = useState("");
+  onChange
+}: PlayerPickerProps) {
+  const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
 
-  const results = useMemo(() => {
-    const term = search.trim().toLowerCase();
+  const selected = players.find((p) => p.id === value);
 
-    if (!term) return [];
-
-    return players
-      .filter(
-        (player) =>
-          player.name.toLowerCase().includes(term) &&
-          !excludedIds.includes(player.id)
-      )
-      .slice(0, 8);
-  }, [search, players, excludedIds]);
+  const matches = query.trim()
+    ? players.filter((player) =>
+        player.name.toLowerCase().includes(query.toLowerCase()) &&
+        (!excludedIds.includes(player.id) || player.id === value)
+      ).slice(0, 8)
+    : [];
 
   return (
-    <section className="picker">
-      <div className="picker-heading">
-        <h3>{label}</h3>
-        <span>{selected.length}/{max}</span>
-      </div>
+    <div style={{ marginBottom: 18, position: "relative" }}>
+      <label>{label}</label>
 
-      {selected.map((player) => (
-        <div className="selected-player" key={player.id}>
+      {selected && (
+        <div style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: 10,
+          background: "#252525",
+          border: "1px solid #e8b84d",
+          borderRadius: 10,
+          marginBottom: 8
+        }}>
           <img
-            src={player.imageUrl}
+            src={selected.imageUrl}
             alt=""
-            onError={(event) => {
-              event.currentTarget.style.visibility = "hidden";
+            onError={(e) => {
+              e.currentTarget.style.visibility = "hidden";
+            }}
+            style={{
+              width: 52,
+              height: 52,
+              borderRadius: "50%",
+              objectFit: "cover",
+              background: "#444"
             }}
           />
-          <div className="player-details">
-            <strong>{player.name}</strong>
-            <span>{player.position} · {player.team}</span>
+
+          <div style={{ flex: 1 }}>
+            <strong>{selected.name}</strong>
+            <div style={{ color: "#aaa", fontSize: 12 }}>
+              {selected.position} · {selected.team}
+            </div>
           </div>
+
           <button
             type="button"
-            className="remove-button"
-            onClick={() => onRemove(player.id)}
-            aria-label={`Remove ${player.name}`}
+            onClick={() => {
+              onChange("");
+              setQuery("");
+            }}
+            style={{
+              width: "auto",
+              padding: 8,
+              background: "#444",
+              color: "white"
+            }}
           >
-            ×
+            Remove
           </button>
         </div>
-      ))}
+      )}
 
-      {selected.length < max && (
-        <div className="search-wrap">
-          <input
-            value={search}
-            onChange={(event) => {
-              setSearch(event.target.value);
-              setOpen(true);
-            }}
-            onFocus={() => setOpen(true)}
-            placeholder="Search NFL players..."
-            autoComplete="off"
-          />
+      <input
+        type="search"
+        value={query}
+        placeholder="Type a player's name..."
+        onFocus={() => setOpen(true)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+      />
 
-          {open && search.trim() && (
-            <div className="search-results">
-              {results.length > 0 ? (
-                results.map((player) => (
-                  <button
-                    type="button"
-                    className="search-result"
-                    key={player.id}
-                    onClick={() => {
-                      onSelect(player);
-                      setSearch("");
-                      setOpen(false);
-                    }}
-                  >
-                    <img
-                      src={player.imageUrl}
-                      alt=""
-                      onError={(event) => {
-                        event.currentTarget.style.visibility = "hidden";
-                      }}
-                    />
-                    <span>
-                      <strong>{player.name}</strong>
-                      <small>{player.position} · {player.team}</small>
-                    </span>
-                    <b>+</b>
-                  </button>
-                ))
-              ) : (
-                <p className="no-results">No matching players found.</p>
-              )}
-            </div>
+      {open && query.trim() !== "" && (
+        <div style={{
+          background: "#202020",
+          border: "1px solid #444",
+          borderRadius: 10,
+          maxHeight: 320,
+          overflowY: "auto",
+          marginTop: -8,
+          marginBottom: 12,
+          position: "relative",
+          zIndex: 10
+        }}>
+          {matches.length > 0 ? (
+            matches.map((player) => (
+              <button
+                type="button"
+                key={player.id}
+                onClick={() => {
+                  onChange(player.id);
+                  setQuery("");
+                  setOpen(false);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  width: "100%",
+                  padding: 10,
+                  background: "transparent",
+                  color: "white",
+                  borderBottom: "1px solid #383838",
+                  borderRadius: 0,
+                  textAlign: "left",
+                  letterSpacing: 0
+                }}
+              >
+                <img
+                  src={player.imageUrl}
+                  alt=""
+                  onError={(e) => {
+                    e.currentTarget.style.visibility = "hidden";
+                  }}
+                  style={{
+                    width: 45,
+                    height: 45,
+                    borderRadius: "50%",
+                    objectFit: "cover",
+                    background: "#444"
+                  }}
+                />
+
+                <span style={{ flex: 1 }}>
+                  <strong>{player.name}</strong>
+                  <span style={{
+                    display: "block",
+                    fontSize: 11,
+                    color: "#aaa",
+                    marginTop: 3
+                  }}>
+                    {player.position} · {player.team}
+                  </span>
+                </span>
+
+                <span style={{ color: "#e8b84d" }}>+</span>
+              </button>
+            ))
+          ) : (
+            <p style={{
+              padding: 15,
+              color: "#aaa",
+              fontSize: 13
+            }}>
+              No matching players found.
+            </p>
           )}
         </div>
       )}
-
-      {selected.length >= max && (
-        <p className="helper-text">Maximum of {max} players selected.</p>
-      )}
-    </section>
+    </div>
   );
 }
 
 export default function Home() {
-  const [username, setUsername] = useState("");
-  const [questionType, setQuestionType] = useState<"Trade" | "Start/Sit">(
-    "Trade"
-  );
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [giving, setGiving] = useState<Player[]>([]);
-  const [receiving, setReceiving] = useState<Player[]>([]);
-  const [startSit, setStartSit] = useState<Player[]>([]);
-  const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [success, setSuccess] = useState(false);
+  const [step, setStep] = useState(1);
+  const [tiktok, setTiktok] = useState("");
+  const [type, setType] = useState<QuestionType | null>(null);
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) setSubmissions(JSON.parse(saved));
-    } catch {
-      console.error("Could not load saved submissions.");
-    }
-  }, []);
+  const [players, setPlayers] = useState<Player[]>([]);
+  const [loadingPlayers, setLoadingPlayers] = useState(true);
+  const [playerError, setPlayerError] = useState("");
+  const [retry, setRetry] = useState(0);
+
+  const [sending, setSending] = useState<string[]>([""]);
+  const [receiving, setReceiving] = useState<string[]>([""]);
+  const [startSit, setStartSit] = useState<string[]>(["", ""]);
+
+  const [queue, setQueue] = useState<Submission[]>([]);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadPlayers() {
-      setLoading(true);
-      setError("");
+      setLoadingPlayers(true);
+      setPlayerError("");
 
       try {
         const response = await fetch("/api/players");
 
         if (!response.ok) {
-          throw new Error(`Player list request failed (${response.status}).`);
+          throw new Error("Player database could not load.");
         }
 
         const data = await response.json();
 
         if (!Array.isArray(data)) {
-          throw new Error(data?.error || "The player list was not returned.");
+          throw new Error("Invalid player data.");
         }
 
         if (!cancelled) {
           setPlayers(data);
-          if (data.length === 0) {
-            setError("No players were returned. Please try again.");
-          }
         }
-      } catch (err) {
+      } catch {
         if (!cancelled) {
-          setError(
-            err instanceof Error
-              ? err.message
-              : "Could not load the player list."
+          setPlayerError(
+            "We couldn't load the ESPN player list. Please try again."
           );
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoadingPlayers(false);
+        }
       }
     }
 
@@ -211,238 +254,401 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
+  }, [retry]);
+
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(
+        localStorage.getItem("xo-trades") || "[]"
+      );
+
+      setQueue(
+        saved.map((item: any) => ({
+          id: item.id,
+          tiktok: item.tiktok || item.team || "@unknown",
+          type: item.type || "Trade",
+          sending: item.sending || [],
+          receiving: item.receiving || [],
+          players: item.players || [],
+          createdAt: item.createdAt || ""
+        }))
+      );
+    } catch {
+      setQueue([]);
+    }
   }, []);
 
-  const allSelectedIds = [
-    ...giving.map((p) => p.id),
-    ...receiving.map((p) => p.id),
-    ...startSit.map((p) => p.id),
-  ];
+  function saveQueue(updated: Submission[]) {
+    setQueue(updated);
+    localStorage.setItem("xo-trades", JSON.stringify(updated));
+  }
 
-  function saveSubmission() {
-    const cleanUsername = username.trim().replace(/^@/, "");
+  function addPlayer(
+    list: string[],
+    setter: (value: string[]) => void,
+    max: number
+  ) {
+    if (list.length < max) {
+      setter([...list, ""]);
+    }
+  }
 
-    if (!cleanUsername) {
+  function updatePlayer(
+    list: string[],
+    setter: (value: string[]) => void,
+    index: number,
+    value: string
+  ) {
+    setter(list.map((p, i) => i === index ? value : p));
+  }
+
+  function removePlayer(
+    list: string[],
+    setter: (value: string[]) => void,
+    index: number
+  ) {
+    if (list.length > 1) {
+      setter(list.filter((_, i) => i !== index));
+    }
+  }
+
+  function chooseQuestion(question: QuestionType) {
+    if (!tiktok.trim()) {
+      alert("Please enter your TikTok username first.");
+      return;
+    }
+
+    setType(question);
+    setStep(2);
+  }
+
+  function submitQuestion() {
+    if (!tiktok.trim()) {
       alert("Please enter your TikTok username.");
       return;
     }
 
-    if (questionType === "Trade" && (!giving.length || !receiving.length)) {
-      alert("Please select at least one player on both sides of the trade.");
-      return;
+    const username = tiktok.trim().startsWith("@")
+      ? tiktok.trim()
+      : "@" + tiktok.trim();
+
+    if (type === "Trade") {
+      const send = sending.filter(Boolean);
+      const receive = receiving.filter(Boolean);
+
+      if (!send.length || !receive.length) {
+        alert("Choose at least one player on each side.");
+        return;
+      }
+
+      const submission: Submission = {
+        id: crypto.randomUUID(),
+        tiktok: username,
+        type: "Trade",
+        sending: send.map(id =>
+          players.find(p => p.id === id)?.name || id
+        ),
+        receiving: receive.map(id =>
+          players.find(p => p.id === id)?.name || id
+        ),
+        players: [],
+        createdAt: new Date().toLocaleTimeString()
+      };
+
+      saveQueue([submission, ...queue]);
+    } else if (type === "Start/Sit") {
+      const selected = startSit.filter(Boolean);
+
+      if (selected.length < 2) {
+        alert("Choose at least two players.");
+        return;
+      }
+
+      const submission: Submission = {
+        id: crypto.randomUUID(),
+        tiktok: username,
+        type: "Start/Sit",
+        sending: [],
+        receiving: [],
+        players: selected.map(id =>
+          players.find(p => p.id === id)?.name || id
+        ),
+        createdAt: new Date().toLocaleTimeString()
+      };
+
+      saveQueue([submission, ...queue]);
     }
 
-    if (questionType === "Start/Sit" && startSit.length < 2) {
-      alert("Please select at least two players.");
-      return;
-    }
+    alert("Your question has been submitted!");
 
-    const submission: Submission = {
-      id: crypto.randomUUID(),
-      username: cleanUsername,
-      type: questionType,
-      giving: questionType === "Trade" ? giving : [],
-      receiving: questionType === "Trade" ? receiving : [],
-      players: questionType === "Start/Sit" ? startSit : [],
-      createdAt: new Date().toISOString(),
-    };
-
-    const updated = [submission, ...submissions];
-
-    setSubmissions(updated);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
-
-    setGiving([]);
-    setReceiving([]);
-    setStartSit([]);
-    setUsername("");
-    setSuccess(true);
-
-    window.setTimeout(() => setSuccess(false), 5000);
+    setStep(1);
+    setTiktok("");
+    setType(null);
+    setSending([""]);
+    setReceiving([""]);
+    setStartSit(["", ""]);
   }
 
+  function removeTrade(id: string) {
+    saveQueue(queue.filter(item => item.id !== id));
+  }
+
+  const allSelected = [...sending, ...receiving];
+
+  const addButtonStyle = {
+    background: "#292929",
+    color: "#e8b84d",
+    border: "1px solid #555",
+    padding: 11,
+    marginTop: 5
+  };
+
+  const backButtonStyle = {
+    background: "#292929",
+    color: "white",
+    marginBottom: 20
+  };
+
   return (
-    <main className="page">
-      <header className="topbar">
-        <a className="brand" href="/">
-          ASK<span>XO</span>
-        </a>
-        <span className="live-label">
-          <i /> FANTASY QUESTION CENTER
-        </span>
+    <main>
+      <header>
+        <h1>ASK<span>XO</span></h1>
+        <p>THE FANTASY QUESTION CENTER</p>
       </header>
 
-      <section className="hero">
-        <p className="eyebrow">YOUR FANTASY. YOUR CALL.</p>
-        <h1>
-          ASK <span>XO.</span>
-        </h1>
-        <p className="hero-copy">
-          Got a trade? Need a start or sit decision?
-          <br />
-          Send it in and get your question on the stream.
-        </p>
-      </section>
+      {step === 1 && (
+        <section className="panel">
+          <h2>Welcome to ASKXO</h2>
 
-      <section className="form-card">
-        <div className="section-top">
-          <div>
-            <p className="eyebrow">SUBMIT YOUR QUESTION</p>
-            <h2>Let&apos;s hear it.</h2>
-          </div>
-          <span className="step-label">ASKXO</span>
-        </div>
-
-        <label className="field-label" htmlFor="username">
-          YOUR TIKTOK USERNAME
-        </label>
-        <div className="username-input">
-          <span>@</span>
+          <label>YOUR EXACT TIKTOK @</label>
           <input
-            id="username"
-            value={username}
-            onChange={(event) =>
-              setUsername(event.target.value.replace(/^@/, ""))
-            }
-            placeholder="yourusername"
-            maxLength={30}
+            value={tiktok}
+            onChange={e => setTiktok(e.target.value)}
+            placeholder="@yourtiktokusername"
           />
-        </div>
 
-        <label className="field-label">WHAT ARE WE LOOKING AT?</label>
-        <div className="type-buttons">
+          <h3>WHAT ARE YOU ASKING?</h3>
+
           <button
-            type="button"
-            className={questionType === "Trade" ? "type-button active" : "type-button"}
-            onClick={() => setQuestionType("Trade")}
+            onClick={() => chooseQuestion("Trade")}
+            style={{ marginBottom: 14 }}
           >
-            <span>⇄</span>
-            <strong>TRADE</strong>
-            <small>Who wins the deal?</small>
+            ↔ TRADE QUESTION
           </button>
 
           <button
-            type="button"
-            className={questionType === "Start/Sit" ? "type-button active" : "type-button"}
-            onClick={() => setQuestionType("Start/Sit")}
+            onClick={() => chooseQuestion("Start/Sit")}
           >
-            <span>⚡</span>
-            <strong>START / SIT</strong>
-            <small>Who should I play?</small>
+            ★ START / SIT QUESTION
           </button>
-        </div>
+        </section>
+      )}
 
-        <div className="player-area">
-          {loading ? (
-            <div className="status-message">
-              <div className="spinner" />
-              Loading NFL player list...
-            </div>
-          ) : error ? (
-            <div className="error-message">
-              <strong>Players could not load.</strong>
-              <p>{error}</p>
-              <button
-                type="button"
-                className="retry-button"
-                onClick={() => window.location.reload()}
-              >
+      {step === 2 && (
+        <section className="panel">
+          <button
+            style={backButtonStyle}
+            onClick={() => setStep(1)}
+          >
+            ← BACK
+          </button>
+
+          {loadingPlayers && (
+            <p className="empty">Loading ESPN players...</p>
+          )}
+
+          {playerError && (
+            <div>
+              <p style={{ color: "#ff9999" }}>{playerError}</p>
+              <button onClick={() => setRetry(r => r + 1)}>
                 TRY AGAIN
               </button>
             </div>
-          ) : questionType === "Trade" ? (
+          )}
+
+          {!loadingPlayers && !playerError && players.length > 0 && (
             <>
-              <div className="trade-heading">
-                <span>YOUR TRADE</span>
-                <span>UP TO 4 PLAYERS PER SIDE</span>
-              </div>
+              {type === "Trade" && (
+                <>
+                  <h2>Submit Your Trade</h2>
+                  <p>Search and select up to 4 players on each side.</p>
 
-              <div className="trade-grid">
-                <PlayerPicker
-                  label="YOU GIVE"
-                  selected={giving}
-                  players={players}
-                  max={4}
-                  excludedIds={allSelectedIds.filter(
-                    (id) => !giving.some((p) => p.id === id)
+                  <h3>YOU SEND</h3>
+
+                  {sending.map((id, index) => (
+                    <div key={`send-${index}`}>
+                      <PlayerPicker
+                        label={`Player ${index + 1}`}
+                        players={players}
+                        value={id}
+                        excludedIds={allSelected}
+                        onChange={value =>
+                          updatePlayer(sending, setSending, index, value)
+                        }
+                      />
+
+                      {sending.length > 1 && (
+                        <button
+                          style={addButtonStyle}
+                          onClick={() =>
+                            removePlayer(sending, setSending, index)
+                          }
+                        >
+                          REMOVE PLAYER
+                        </button>
+                      )}
+                    </div>
+                  ))}
+
+                  {sending.length < 4 && (
+                    <button
+                      style={addButtonStyle}
+                      onClick={() =>
+                        addPlayer(sending, setSending, 4)
+                      }
+                    >
+                      + ADD PLAYER
+                    </button>
                   )}
-                  onSelect={(player) =>
-                    setGiving((old) => [...old, player])
-                  }
-                  onRemove={(id) =>
-                    setGiving((old) => old.filter((p) => p.id !== id))
-                  }
-                />
 
-                <div className="trade-arrow">⇄</div>
+                  <h3>YOU RECEIVE</h3>
 
-                <PlayerPicker
-                  label="YOU GET"
-                  selected={receiving}
-                  players={players}
-                  max={4}
-                  excludedIds={allSelectedIds.filter(
-                    (id) => !receiving.some((p) => p.id === id)
+                  {receiving.map((id, index) => (
+                    <div key={`receive-${index}`}>
+                      <PlayerPicker
+                        label={`Player ${index + 1}`}
+                        players={players}
+                        value={id}
+                        excludedIds={allSelected}
+                        onChange={value =>
+                          updatePlayer(receiving, setReceiving, index, value)
+                        }
+                      />
+
+                      {receiving.length > 1 && (
+                        <button
+                          style={addButtonStyle}
+                          onClick={() =>
+                            removePlayer(receiving, setReceiving, index)
+                          }
+                        >
+                          REMOVE PLAYER
+                        </button>
+                      )}
+                    </div>
+                  ))}
+
+                  {receiving.length < 4 && (
+                    <button
+                      style={addButtonStyle}
+                      onClick={() =>
+                        addPlayer(receiving, setReceiving, 4)
+                      }
+                    >
+                      + ADD PLAYER
+                    </button>
                   )}
-                  onSelect={(player) =>
-                    setReceiving((old) => [...old, player])
-                  }
-                  onRemove={(id) =>
-                    setReceiving((old) => old.filter((p) => p.id !== id))
-                  }
-                />
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="trade-heading">
-                <span>START / SIT COMPARISON</span>
-                <span>SELECT 2 OR 3 PLAYERS</span>
-              </div>
 
-              <PlayerPicker
-                label="CHOOSE YOUR PLAYERS"
-                selected={startSit}
-                players={players}
-                max={3}
-                excludedIds={allSelectedIds.filter(
-                  (id) => !startSit.some((p) => p.id === id)
-                )}
-                onSelect={(player) =>
-                  setStartSit((old) => [...old, player])
-                }
-                onRemove={(id) =>
-                  setStartSit((old) => old.filter((p) => p.id !== id))
-                }
-              />
+                  <button
+                    style={{ marginTop: 22 }}
+                    onClick={submitQuestion}
+                  >
+                    SUBMIT TRADE QUESTION
+                  </button>
+                </>
+              )}
+
+              {type === "Start/Sit" && (
+                <>
+                  <h2>Start / Sit Question</h2>
+                  <p>Choose 2 or 3 players to compare.</p>
+
+                  {startSit.map((id, index) => (
+                    <div key={`start-${index}`}>
+                      <PlayerPicker
+                        label={`Player ${index + 1}`}
+                        players={players}
+                        value={id}
+                        excludedIds={startSit}
+                        onChange={value =>
+                          updatePlayer(startSit, setStartSit, index, value)
+                        }
+                      />
+
+                      {startSit.length > 2 && (
+                        <button
+                          style={addButtonStyle}
+                          onClick={() =>
+                            removePlayer(startSit, setStartSit, index)
+                          }
+                        >
+                          REMOVE PLAYER
+                        </button>
+                      )}
+                    </div>
+                  ))}
+
+                  {startSit.length < 3 && (
+                    <button
+                      style={addButtonStyle}
+                      onClick={() =>
+                        addPlayer(startSit, setStartSit, 3)
+                      }
+                    >
+                      + ADD PLAYER
+                    </button>
+                  )}
+
+                  <button
+                    style={{ marginTop: 22 }}
+                    onClick={submitQuestion}
+                  >
+                    SUBMIT START / SIT QUESTION
+                  </button>
+                </>
+              )}
             </>
           )}
-        </div>
+        </section>
+      )}
 
-        <button
-          type="button"
-          className="submit-button"
-          onClick={saveSubmission}
-          disabled={loading || !!error}
-        >
-          SUBMIT TO ASKXO <span>→</span>
-        </button>
+      <section className="panel">
+        <h2>
+          Submission Queue{" "}
+          <span className="count">{queue.length}</span>
+        </h2>
 
-        {success && (
-          <div className="success-message">
-            Your question has been saved. You&apos;re in!
-          </div>
+        {queue.length === 0 && (
+          <p className="empty">No questions submitted yet.</p>
         )}
 
-        <p className="privacy-note">
-          Make sure your TikTok username is correct so XO can find you.
-        </p>
+        {queue.map(item => (
+          <article className="trade" key={item.id}>
+            <strong>{item.tiktok}</strong>
+            <small>{item.createdAt}</small>
+
+            <h3>{item.type.toUpperCase()}</h3>
+
+            {item.type === "Trade" ? (
+              <>
+                <p><b>SENDS:</b> {item.sending.join(", ")}</p>
+                <p><b>RECEIVES:</b> {item.receiving.join(", ")}</p>
+              </>
+            ) : (
+              <p><b>PLAYERS:</b> {item.players.join(", ")}</p>
+            )}
+
+            <button
+              className="remove"
+              onClick={() => removeTrade(item.id)}
+            >
+              REMOVE
+            </button>
+          </article>
+        ))}
       </section>
 
-      <footer className="footer">
-        <strong>ASK<span>XO</span></strong>
-        <p>FANTASY FOOTBALL. REAL TALK.</p>
-      </footer>
+      <footer>ASKXO · YOUR FANTASY QUESTIONS ANSWERED</footer>
     </main>
   );
 }
